@@ -23,10 +23,21 @@ const probing = ref(false)
 const results = ref<ProbeResult[]>([])
 const probed = ref(false)
 
-/** 相册 / 组合消息探测（对应 tdl --group），默认开启 */
-const withGroup = ref(settings.settings.autoGroup)
-const savePath = ref(settings.settings.downloadPath)
-const concurrency = ref(settings.settings.concurrency)
+/** 系统设置异步加载完成后自动同步；用户手动修改后以用户输入为准 */
+function follow<T>(getter: () => T) {
+  const override = ref<T | null>(null)
+  return computed({
+    get: () => (override.value === null ? getter() : override.value),
+    set: (v: T) => {
+      override.value = v
+    },
+  })
+}
+
+/** 相册 / 组合消息探测（对应 tdl --group），默认跟随系统设置 */
+const withGroup = follow(() => settings.settings.autoGroup)
+const savePath = follow(() => settings.settings.downloadPath)
+const concurrency = follow(() => settings.settings.concurrency)
 const includeExt = ref('')
 const excludeExt = ref('')
 const pickerShow = ref(false)

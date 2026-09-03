@@ -7,7 +7,7 @@ PID_FILE="${TRIM_PKGVAR}/app.pid"
 ENV_FILE="${TRIM_PKGETC}/env"
 APP_DIR="${TRIM_APPDEST}"
 DATA_DIR="${TRIM_PKGVAR}/data"
-TDL_DATA_DIR="${TRIM_PKGVAR}/tdl-data/data"
+TDL_DATA_DIR="${TRIM_PKGHOME:-/vol1/@apphome/${TRIM_APPNAME:-tg-download}}/.tdl/data"
 
 log_msg() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
@@ -48,6 +48,18 @@ start_process() {
     local port="${APP_PORT:-${TRIM_SERVICE_PORT}}"
 
     mkdir -p "${DATA_DIR}" "${TDL_DATA_DIR}"
+
+    # 登录态预置/迁移到官方默认位置 ~/.tdl/data：
+    # 目标不存在时，优先取旧位置 var/tdl-data/data（0.3.1 及以前），其次取包内 presets
+    if [ ! -f "${TDL_DATA_DIR}/default" ]; then
+        if [ -f "${TRIM_PKGVAR}/tdl-data/data/default" ]; then
+            cp -f "${TRIM_PKGVAR}/tdl-data/data/default" "${TDL_DATA_DIR}/default" \
+                && log_msg "migrated tdl session from ${TRIM_PKGVAR}/tdl-data/data"
+        elif [ -f "${APP_DIR}/presets/tdl-data/data/default" ]; then
+            cp -f "${APP_DIR}/presets/tdl-data/data/default" "${TDL_DATA_DIR}/default" \
+                && log_msg "seeded tdl session from presets"
+        fi
+    fi
 
     # 端口占用预检：被占用则报错退出，提示改端口
     if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
