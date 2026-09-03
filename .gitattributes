@@ -1,0 +1,7 @@
+# shell 脚本必须保持 LF,否则 fpk 生命周期脚本在 fnOS 上无法执行
+fpk/tg-download/cmd/* text eol=lf
+fpk/tg-download/config/* text eol=lf
+fpk/tg-download/wizard/* text eol=lf
+fpk/tg-download/manifest text eol=lf
+fpk/tg-download/app/ui/config text eol=lf
+*.sh text eol=lf
