@@ -47,7 +47,7 @@ async function onRetry(id: string) {
 }
 async function onCancel(id: string) {
   try {
-    await showConfirmDialog({ title: '取消任务', message: '已下载的分片会被删除，确定取消吗？' })
+    await showConfirmDialog({ title: '取消任务', message: '任务会立即停止；已下载的分片会保留，重新下载相同链接可断点续传。确定取消吗？' })
   } catch {
     return
   }
