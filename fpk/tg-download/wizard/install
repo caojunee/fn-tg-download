@@ -1,0 +1,118 @@
+[
+    {
+        "stepTitle": "数据库配置",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "下载任务与历史将持久化到 MariaDB/MySQL。SIT 环境默认写入 test 库；生产环境请改为 td_download 库。库名留空则使用 JSON 文件兜底存储。"
+            },
+            {
+                "type": "text",
+                "field": "db_host",
+                "label": "数据库地址（IP）",
+                "initValue": "192.168.1.2",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写数据库 IP"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "db_port",
+                "label": "数据库端口",
+                "initValue": "3306",
+                "rules": [
+                    {
+                        "required": true,
+                        "pattern": "^[0-9]+$",
+                        "message": "端口必须为数字"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "db_name",
+                "label": "数据库名",
+                "initValue": "test",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写数据库名（SIT: test，生产: td_download）"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "db_user",
+                "label": "用户名",
+                "initValue": "root",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写数据库用户名"
+                    }
+                ]
+            },
+            {
+                "type": "password",
+                "field": "db_password",
+                "label": "密码",
+                "initValue": "gkc2020..",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写数据库密码"
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "stepTitle": "服务配置",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "Web 服务监听端口。若与 NAS 上其他服务冲突（如 8080 被占用），请改用其他端口，例如 8081。"
+            },
+            {
+                "type": "text",
+                "field": "app_port",
+                "label": "服务端口",
+                "initValue": "8080",
+                "rules": [
+                    {
+                        "required": true,
+                        "pattern": "^[0-9]{1,5}$",
+                        "message": "端口必须为 1-5 位数字"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "download_path",
+                "label": "默认下载路径",
+                "initValue": "/vol1/1000/downloads",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写 NAS 上的绝对路径"
+                    }
+                ]
+            },
+            {
+                "type": "text",
+                "field": "proxy",
+                "label": "代理地址",
+                "initValue": "http://192.168.1.2:20172",
+                "rules": [
+                    {
+                        "pattern": "^$|^https?://\\S+$",
+                        "message": "格式：http://host:port，留空不使用代理"
+                    }
+                ]
+            }
+        ]
+    }
+]

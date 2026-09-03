@@ -1,0 +1,86 @@
+#!/bin/bash
+
+# 安装/配置回调：预置登录态、由向导表单拼装 DSN 并写入配置
+# 注意：fnOS 将向导字段按 field 原名传递环境变量（如 app_port、db_host），
+#       不带 wizard_ 前缀。
+
+PKG_VAR="${TRIM_PKGVAR}"
+PKG_ETC="${TRIM_PKGETC}"
+APP_DEST="${TRIM_APPDEST}"
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${PKG_VAR}/info.log" 2>/dev/null
+}
+
+# 单引号安全转义：内容里出现单引号时按 shell 规则处理
+sq_escape() {
+    printf "%s" "$1" | sed "s/'/'\\\\''/g"
+}
+
+mkdir -p "${PKG_VAR}/data" "${PKG_VAR}/tdl-data" "${PKG_ETC}"
+
+# 1) 预置 tdl 登录态（包内 app/presets/tdl-data → var/tdl-data，已存在则跳过）
+if [ ! -f "${PKG_VAR}/tdl-data/data.kv" ] && [ -f "${APP_DEST}/presets/tdl-data/data.kv" ]; then
+    cp -f "${APP_DEST}/presets/tdl-data/data.kv" "${PKG_VAR}/tdl-data/data.kv"
+    [ -d "${APP_DEST}/presets/tdl-data/data" ] && cp -r "${APP_DEST}/presets/tdl-data/data" "${PKG_VAR}/tdl-data/"
+    log_msg "preset tdl session installed"
+fi
+
+# 2) 由向导字段拼装 DSN，与启动端口一起写入 etc/env
+DB_DSN=""
+if [ -n "${db_name}" ]; then
+    DB_DSN="${db_user}:${db_password}@tcp(${db_host}:${db_port})/${db_name}?charset=utf8mb4&loc=Local"
+fi
+APP_PORT="${app_port:-8080}"
+
+cat > "${PKG_ETC}/env" <<EOF
+DB_DSN='$(sq_escape "${DB_DSN}")'
+APP_PORT='$(sq_escape "${APP_PORT}")'
+EOF
+log_msg "env written (port=${APP_PORT}, db dsn length: $(printf '%s' "${DB_DSN}" | wc -c))"
+
+# 2.5) 把向导填写的端口同步进桌面入口配置（ui/config 里是静态声明，系统不会自动替换）
+UI_CONFIG="${APP_DEST}/ui/config"
+if [ -f "${UI_CONFIG}" ] && [ -n "${APP_PORT}" ]; then
+    sed -i "s/\"port\": \"[0-9]*\"/\"port\": \"${APP_PORT}\"/" "${UI_CONFIG}"
+    log_msg "ui/config port synced to ${APP_PORT}"
+fi
+
+# 2.6) 同步 fnOS 数据库里的应用入口 URL（appcenter.app_service）。
+#      fnOS 安装时把 ui/config 的端口注册进 postgres，注册时机可能早于本回调，
+#      因此带重试；失败不影响安装（仅桌面入口端口不对）。
+sync_desktop_db() {
+    local svc="${TRIM_APPNAME:-tg-download}.main"
+    local port="${APP_PORT}"
+    case "${port}" in ''|*[!0-9]*) log_msg "desktop db sync skip: invalid port"; return 0;; esac
+    local i res
+    for i in $(seq 1 10); do
+        res=$(su - postgres -c "psql -d appcenter -Atc \"update app_service set url='http://\\\${host}:${port}/', default_url='http://\\\${host}:${port}/' where service_name='${svc}'\"" 2>/dev/null)
+        if [ "${res}" = "UPDATE 1" ]; then
+            log_msg "desktop entry db synced to port ${port}"
+            return 0
+        fi
+        sleep 3
+    done
+    log_msg "desktop entry db sync FAILED (port ${port}) - entry may still point to manifest port"
+}
+sync_desktop_db
+
+# 3) 预置 settings.json（已存在则不覆盖，用户可在系统设置页修改）
+SETTINGS_FILE="${PKG_VAR}/data/settings.json"
+if [ ! -f "${SETTINGS_FILE}" ]; then
+    cat > "${SETTINGS_FILE}" <<EOF
+{
+  "downloadPath": "${download_path}",
+  "proxy": "${proxy}",
+  "concurrency": 4,
+  "autoGroup": true,
+  "maxSizeMB": 0,
+  "speedLimitKB": 0,
+  "tdlPath": ""
+}
+EOF
+    log_msg "settings.json seeded"
+fi
+
+exit 0

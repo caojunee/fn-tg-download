@@ -1,0 +1,163 @@
+#!/bin/bash
+
+# tg-download 启停脚本（fpk 生命周期入口）
+
+LOG_FILE="${TRIM_PKGVAR}/info.log"
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+ENV_FILE="${TRIM_PKGETC}/env"
+APP_DIR="${TRIM_APPDEST}"
+DATA_DIR="${TRIM_PKGVAR}/data"
+TDL_DATA_DIR="${TRIM_PKGVAR}/tdl-data/data"
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
+}
+
+check_process() {
+    local pid="$1"
+    if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+status() {
+    if [ -r "${PID_FILE}" ]; then
+        local pid
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if check_process "${pid}"; then
+            return 0
+        fi
+        rm -f "${PID_FILE}"
+    fi
+    return 1
+}
+
+start_process() {
+    if status; then
+        return 0
+    fi
+
+    # 读取安装向导/配置向导写入的环境变量（DB_DSN、APP_PORT 等）
+    if [ -r "${ENV_FILE}" ]; then
+        # shellcheck disable=SC1090
+        . "${ENV_FILE}"
+    fi
+
+    # 服务端口：优先用向导填写的 APP_PORT，其次 manifest 声明的 TRIM_SERVICE_PORT
+    local port="${APP_PORT:-${TRIM_SERVICE_PORT}}"
+
+    mkdir -p "${DATA_DIR}" "${TDL_DATA_DIR}"
+
+    # 端口占用预检：被占用则报错退出，提示改端口
+    if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
+        exec 3>&- 3<&- 2>/dev/null
+        log_msg "port ${port} already in use, abort"
+        echo "启动失败：端口 ${port} 已被其他程序占用。请在应用设置中修改服务端口（如 8081）后重试。" > "${TRIM_TEMP_LOGFILE}" 2>/dev/null
+        return 1
+    fi
+
+    local dsn_args=""
+    if [ -n "${DB_DSN}" ]; then
+        # DSN 内含括号/& 等字符，必须整体加引号再交给 bash -c
+        dsn_args="-db-dsn \"${DB_DSN}\""
+    fi
+
+    local cmd
+    cmd="${APP_DIR}/server -addr 0.0.0.0:${port} -web ${APP_DIR}/web -data-dir ${DATA_DIR} -tdl ${APP_DIR}/bin/tdl -tdl-data ${TDL_DATA_DIR} ${dsn_args}"
+
+    log_msg "Starting server: ${cmd}"
+    bash -c "${cmd}" >> "${LOG_FILE}" 2>&1 &
+    printf "%s" "$!" > "${PID_FILE}"
+
+    # 等待端口就绪，最多 10s
+    local count=0
+    while [ ${count} -lt 10 ]; do
+        if check_process "$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')"; then
+            sleep 1
+            count=$((count + 1))
+        else
+            log_msg "server exited immediately, check ${LOG_FILE}"
+            rm -f "${PID_FILE}"
+            return 1
+        fi
+    done
+
+    # 同步 fnOS 数据库里的桌面入口端口。
+    # fnOS 在 install_callback 之后才把入口注册进 postgres（appcenter.app_service），
+    # 因此安装回调阶段同步会扑空；start 时注册必然已完成，这里补一次。
+    sync_desktop_db "${port}"
+    return 0
+}
+
+sync_desktop_db() {
+    local port="$1"
+    local svc="${TRIM_APPNAME:-tg-download}.main"
+    case "${port}" in ''|*[!0-9]*) return 0;; esac
+    local i res
+    for i in 1 2 3 4 5; do
+        res=$(su - postgres -c "psql -d appcenter -Atc \"update app_service set url='http://\\\${host}:${port}/', default_url='http://\\\${host}:${port}/' where service_name='${svc}'\"" 2>/dev/null)
+        if [ "${res}" = "UPDATE 1" ]; then
+            log_msg "desktop entry db synced to port ${port}"
+            return 0
+        fi
+        sleep 2
+    done
+    log_msg "desktop entry db sync FAILED (port ${port})"
+    return 0
+}
+
+stop_process() {
+    log_msg "Stopping process ..."
+
+    if [ -r "${PID_FILE}" ]; then
+        local pid
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+
+        if ! check_process "${pid}"; then
+            rm -f "${PID_FILE}"
+            return 0
+        fi
+
+        # 先停掉可能还在跑的 tdl 子进程
+        pkill -TERM -P "${pid}" >> "${LOG_FILE}" 2>&1
+
+        log_msg "send TERM signal to PID:${pid}..."
+        kill -TERM "${pid}" >> "${LOG_FILE}" 2>&1
+
+        local count=0
+        while check_process "${pid}" && [ ${count} -lt 10 ]; do
+            sleep 1
+            count=$((count + 1))
+            log_msg "waiting process terminal... (${count}s/10s)"
+        done
+
+        if check_process "${pid}"; then
+            log_msg "send KILL signal to PID:${pid}..."
+            kill -KILL "${pid}" >> "${LOG_FILE}" 2>&1
+            sleep 1
+        fi
+        rm -f "${PID_FILE}"
+        log_msg "process stopped."
+    fi
+    return 0
+}
+
+case "$1" in
+start)
+    start_process
+    ;;
+stop)
+    stop_process
+    ;;
+status)
+    if status; then
+        exit 0
+    else
+        exit 3
+    fi
+    ;;
+*)
+    exit 1
+    ;;
+esac

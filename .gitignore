@@ -1,0 +1,12 @@
+web/node_modules/
+server/server*.exe
+server/server.exe~
+server/data/
+server/local-data/
+server/server.log
+dist/
+bin/tdl.zip
+fpk/tg-download/app/server
+fpk/tg-download/app/web/
+*.fpk
+web/.playwright-cli/
