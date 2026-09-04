@@ -85,8 +85,8 @@ export const useDownloadStore = defineStore('download', () => {
     await resumeTask(id)
     await refresh()
   }
-  async function cancel(id: string) {
-    await cancelTask(id)
+  async function cancel(id: string, deletePartial = false) {
+    await cancelTask(id, deletePartial)
     await refresh()
   }
   async function retry(id: string) {

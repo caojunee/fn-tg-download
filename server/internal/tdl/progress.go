@@ -24,6 +24,7 @@ type ProgressSample struct {
 	Percent float64 // 0-100
 	Speed   float64 // 字节/秒
 	Overall bool    // 是否为总览行
+	Name    string  // 进度条对应的文件名（非总览行时为行首 token，可能因文件名含空格被截断）
 }
 
 // ParseProgressLine 解析一行 tdl 进度输出，解析失败返回 ok=false。
@@ -49,6 +50,13 @@ func ParseProgressLine(raw string) (ProgressSample, bool) {
 		v, err := strconv.ParseFloat(m[1], 64)
 		if err == nil {
 			s.Speed = v * unitMultiplier(m[2])
+		}
+	}
+	if !s.Overall {
+		// 行首 token 即文件名（<文件名> [tracker] 32.0% [1.1 MB/s] ...）；
+		// 文件名含空格时会被截断，但前缀 {对话ID}_{消息ID}_ 仍保持唯一性
+		if fields := strings.Fields(line); len(fields) > 0 {
+			s.Name = strings.Trim(fields[0], "[]")
 		}
 	}
 	return s, true

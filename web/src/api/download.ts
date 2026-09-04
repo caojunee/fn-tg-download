@@ -46,9 +46,9 @@ export async function resumeTask(id: string) {
   return httpPost<boolean>(`/download/tasks/${id}/resume`)
 }
 
-export async function cancelTask(id: string) {
+export async function cancelTask(id: string, deletePartial = false) {
   if (USE_MOCK) return (await mock()).mockApi.cancel(id)
-  return httpPost<boolean>(`/download/tasks/${id}/cancel`)
+  return httpPost<boolean>(`/download/tasks/${id}/cancel`, { deletePartial })
 }
 
 export async function retryTask(id: string) {

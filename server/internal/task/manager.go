@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +46,9 @@ type runner struct {
 	base    int64   // 启动时目录字节数
 	percent float64 // stdout 解析到的百分比（totalSize 未知时的兜底）
 	speed   float64 // stdout 解析到的瞬时速率（字节/秒）
+
+	fm          sync.Mutex         // 保护 filePerc（onLine 与 watchTask 不同 goroutine）
+	filePerc    map[string]float64 // stdout 追踪到的真实文件 → 最新百分比
 }
 
 func NewManager(opts Options) *Manager {
@@ -189,6 +195,45 @@ func newID() string {
 	return "t_" + hex.EncodeToString(b)
 }
 
+// fileRe 匹配 tdl 默认文件名模板 {对话ID}_{消息ID}_{文件名}，
+// 用于从进度行中排除 CPU/Memory 等系统统计行。
+var fileRe = regexp.MustCompile(`^\d+_\d+_.+`)
+
+// syncFilesLocked 用 stdout 追踪到的真实文件名重建任务的文件列表。
+// 前提：持有 m.mu 与 runner.fm。每次全量重建，可自愈清理此前误入的
+// 统计行条目；私有频道探测失败导致的占位列表也会被真实数据替换。
+func syncFilesLocked(t *Task, percs map[string]float64) {
+	names := make([]string, 0, len(percs))
+	for n := range percs {
+		if fileRe.MatchString(n) {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	sort.Strings(names)
+
+	old := make(map[string]File, len(t.Files))
+	for _, f := range t.Files {
+		old[f.Name] = f
+	}
+	files := make([]File, 0, len(names))
+	for _, n := range names {
+		id := newID()
+		if of, ok := old[n]; ok {
+			id = of.ID // 保持 ID 稳定，避免前端列表抖动
+		}
+		p := percs[n]
+		st := StatusDownloading
+		if p >= 100 {
+			st = StatusCompleted
+		}
+		files = append(files, File{ID: id, Name: n, Status: st, Progress: p})
+	}
+	t.Files = files
+}
+
 // Pause 暂停任务（终止子进程，tdl 会保存断点）。
 func (m *Manager) Pause(id string) error {
 	m.mu.Lock()
@@ -241,7 +286,8 @@ func (m *Manager) Resume(id string) error {
 }
 
 // Cancel 取消任务（终止进程并标记取消）。
-func (m *Manager) Cancel(id string) error {
+// deletePartial 为 true 时，删除该任务已下载的 .tmp 分片（放弃断点续传）。
+func (m *Manager) Cancel(id string, deletePartial bool) error {
 	m.mu.Lock()
 	t := m.findLocked(id)
 	if t == nil {
@@ -268,8 +314,34 @@ func (m *Manager) Cancel(id string) error {
 		}
 		close(r.stop)
 		<-r.stopped
+		if deletePartial {
+			r.fm.Lock()
+			names := make([]string, 0, len(r.filePerc))
+			for n := range r.filePerc {
+				names = append(names, n)
+			}
+			r.fm.Unlock()
+			removePartials(t.SavePath, names)
+		}
 	}
 	return nil
+}
+
+// removePartials 只删除 .tmp 分片，绝不碰已完成的真实文件。
+// names 为 stdout 追踪到的文件名（可能被空格截断，前缀精确名仍可命中）。
+func removePartials(dir string, names []string) {
+	if dir == "" || len(names) == 0 {
+		return
+	}
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, n+".tmp"))
+		if strings.HasSuffix(n, ".tmp") {
+			_ = os.Remove(filepath.Join(dir, n))
+		}
+	}
 }
 
 // Retry 重新入队失败/取消/已完成的任务。
@@ -404,6 +476,15 @@ func (m *Manager) startLocked(task *Task) {
 			if s.Speed > r.speed {
 				r.speed = s.Speed
 			}
+			// 追踪真实文件名（私有频道/探测失败时，占位文件数与实际不符）
+			if s.Name != "" {
+				r.fm.Lock()
+				if r.filePerc == nil {
+					r.filePerc = make(map[string]float64)
+				}
+				r.filePerc[s.Name] = s.Percent
+				r.fm.Unlock()
+			}
 		}
 	})
 	if err != nil {
@@ -458,6 +539,12 @@ func (m *Manager) watchTask(task *Task, r *runner) {
 				if dl := cur - r.base; dl > task.DownloadedSize {
 					task.DownloadedSize = dl
 				}
+				// 用 stdout 追踪到的真实文件列表修正占位数据
+				r.fm.Lock()
+				if len(r.filePerc) > 0 {
+					syncFilesLocked(task, r.filePerc)
+				}
+				r.fm.Unlock()
 				switch {
 				case task.TotalSize > 0:
 					p := float64(task.DownloadedSize) / float64(task.TotalSize) * 100
@@ -503,7 +590,7 @@ func (m *Manager) finishTask(task *Task, r *runner, exitErr error) {
 			if task.TotalSize > 0 {
 				task.DownloadedSize = task.TotalSize
 			}
-			fillFilesFromDir(task)
+			fillFilesFinal(task, r)
 		}
 		task.Speed = 0
 		task.FinishedAt = time.Now().UnixMilli()
@@ -523,7 +610,49 @@ func trimErr(err error) string {
 	return s
 }
 
-// fillFilesFromDir 任务完成后用目录中的真实文件回填文件列表。
+// fillFilesFinal 任务完成后的文件回填：优先使用 stdout 追踪到的本任务
+// 文件名（避免同目录其他任务的文件被并入），拿不到时退回目录扫描。
+func fillFilesFinal(t *Task, r *runner) {
+	r.fm.Lock()
+	percs := make(map[string]float64, len(r.filePerc))
+	for n, p := range r.filePerc {
+		if fileRe.MatchString(n) {
+			percs[n] = p
+		}
+	}
+	r.fm.Unlock()
+
+	if len(percs) > 0 {
+		names := make([]string, 0, len(percs))
+		for n := range percs {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		files := make([]File, 0, len(names))
+		for _, n := range names {
+			size := fileSize(t.SavePath, n)
+			files = append(files, File{
+				ID: newID(), Name: n, Size: size,
+				Downloaded: size, Progress: 100, Status: StatusCompleted,
+			})
+		}
+		t.Files = files
+		return
+	}
+	fillFilesFromDir(t)
+}
+
+// fileSize 在目录中查找文件大小（兼容 tdl 完成时已去掉 .tmp 后缀的情况）。
+func fileSize(dir, name string) int64 {
+	for _, cand := range []string{name, name + ".tmp"} {
+		if info, err := os.Stat(filepath.Join(dir, cand)); err == nil {
+			return info.Size()
+		}
+	}
+	return 0
+}
+
+// fillFilesFromDir 任务完成后用目录中的真实文件回填文件列表（跳过 .tmp 分片）。
 func fillFilesFromDir(t *Task) {
 	entries, err := os.ReadDir(t.SavePath)
 	if err != nil {
@@ -531,7 +660,7 @@ func fillFilesFromDir(t *Task) {
 	}
 	files := make([]File, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".tmp") {
 			continue
 		}
 		info, err := e.Info()

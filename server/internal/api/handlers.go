@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -248,25 +249,35 @@ func (s *Server) handleClearHistory(w http.ResponseWriter, r *http.Request) {
 	ok(w, true)
 }
 
-type actionFunc func(string) error
+type actionFunc func(id string, deletePartial bool) error
 
 func (s *Server) taskAction(fnName string) http.HandlerFunc {
 	var fn actionFunc
 	switch fnName {
 	case "pause":
-		fn = s.tasks.Pause
+		fn = func(id string, _ bool) error { return s.tasks.Pause(id) }
 	case "resume":
-		fn = s.tasks.Resume
+		fn = func(id string, _ bool) error { return s.tasks.Resume(id) }
 	case "cancel":
 		fn = s.tasks.Cancel
 	case "retry":
-		fn = s.tasks.Retry
+		fn = func(id string, _ bool) error { return s.tasks.Retry(id) }
 	default:
-		fn = func(string) error { return errors.New("unknown action") }
+		fn = func(string, bool) error { return errors.New("unknown action") }
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if err := fn(id); err != nil {
+		// 可选 body：{"deletePartial":true} 仅取消动作使用（删除已下载分片）
+		deletePartial := false
+		if r.Body != nil {
+			var body struct {
+				DeletePartial bool `json:"deletePartial"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+				deletePartial = body.DeletePartial
+			}
+		}
+		if err := fn(id, deletePartial); err != nil {
 			fail(w, codeBizErr, err.Error())
 			return
 		}

@@ -45,14 +45,20 @@ async function onResume(id: string) {
 async function onRetry(id: string) {
   await download.retry(id)
 }
-async function onCancel(id: string) {
-  try {
-    await showConfirmDialog({ title: '取消任务', message: '任务会立即停止；已下载的分片会保留，重新下载相同链接可断点续传。确定取消吗？' })
-  } catch {
-    return
-  }
-  await download.cancel(id)
-  showSuccessToast('任务已取消')
+const cancelShow = ref(false)
+const cancelTarget = ref('')
+const cancelActions = [
+  { name: '保留分片并取消（可断点续传）' },
+  { name: '删除分片并取消', color: '#ee0a24' },
+]
+function onCancel(id: string) {
+  cancelTarget.value = id
+  cancelShow.value = true
+}
+async function doCancel(deletePartial: boolean) {
+  cancelShow.value = false
+  await download.cancel(cancelTarget.value, deletePartial)
+  showSuccessToast(deletePartial ? '任务已取消，分片已删除' : '任务已取消，分片已保留')
 }
 async function onRemove(id: string) {
   await download.removeHistory([id])
@@ -158,6 +164,15 @@ async function onResumeAll() {
         </van-tab>
       </van-tabs>
     </div>
+
+    <van-action-sheet
+      v-model:show="cancelShow"
+      :actions="cancelActions"
+      cancel-text="返回"
+      close-on-click-action
+      description="选择取消方式：保留分片下次可续传，删除分片则从零重新下载"
+      @select="(_a: unknown, index: number) => doCancel(index === 1)"
+    />
   </div>
 </template>
 

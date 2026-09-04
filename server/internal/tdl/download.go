@@ -131,9 +131,13 @@ func (r *RunningDownload) pump(rd io.ReadCloser) {
 	sc := bufio.NewScanner(rd)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line != "" && r.onLine != nil {
-			r.onLine(line)
+		// 进度条用 \r 原地刷新，一帧内含多个 tracker 行，
+		// 需按 \r 再切分，否则整帧粘成一行无法解析
+		for _, seg := range strings.Split(sc.Text(), "\r") {
+			line := strings.TrimSpace(seg)
+			if line != "" && r.onLine != nil {
+				r.onLine(line)
+			}
 		}
 	}
 }
