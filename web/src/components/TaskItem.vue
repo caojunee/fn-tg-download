@@ -20,7 +20,10 @@ const kindLabel: Record<MediaKind, string> = {
   single: '单条消息',
   album: '相册',
   group: '组合消息',
+  channel: '整频道',
 }
+
+const kindIcon = (kind: MediaKind) => (kind === 'single' ? 'file' : kind === 'channel' ? 'folder' : 'layers')
 
 const isActive = computed(() => ['pending', 'downloading', 'paused'].includes(props.task.status))
 const doneFiles = computed(() => props.task.files.filter((f) => f.progress >= 100).length)
@@ -36,7 +39,7 @@ const progressText = computed(() => props.task.progress.toFixed(1))
   <div class="task" :class="{ 'is-compact': compact }">
     <div class="task__head">
       <div class="task__icon" :class="`task__icon--${task.kind}`">
-        <AppIcon :name="task.kind === 'single' ? 'file' : 'layers'" :size="17" />
+        <AppIcon :name="kindIcon(task.kind)" :size="17" />
       </div>
 
       <div class="task__main">
@@ -182,6 +185,11 @@ const progressText = computed(() => props.task.progress.toFixed(1))
     &--group {
       color: $color-primary;
       background: $color-primary-light;
+    }
+
+    &--channel {
+      color: $color-success;
+      background: rgba(34, 197, 94, 0.12);
     }
   }
 

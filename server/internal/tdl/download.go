@@ -21,6 +21,9 @@ type DownloadOptions struct {
 	Proxy     string
 
 	URL      string
+	// File 为 tdl chat export 导出的 JSON 路径；非空时以 -f 模式下载
+	// （整频道任务），忽略 URL。
+	File     string
 	SavePath string
 	Group    bool
 
@@ -37,7 +40,6 @@ type DownloadOptions struct {
 func BuildArgs(o DownloadOptions) []string {
 	args := []string{
 		"dl",
-		"-u", o.URL,
 		"-d", o.SavePath,
 		// 恢复下载且不交互（tdl 有未完成进度时直接续传）
 		"--continue",
@@ -47,6 +49,11 @@ func BuildArgs(o DownloadOptions) []string {
 		"--storage", fmt.Sprintf("type=bolt,path=%s", o.DataDir),
 		"-l", strconv.Itoa(o.Limit),
 		"-t", strconv.Itoa(o.Threads),
+	}
+	if o.File != "" {
+		args = append(args, "-f", o.File)
+	} else {
+		args = append(args, "-u", o.URL)
 	}
 	if o.Group {
 		args = append(args, "--group")

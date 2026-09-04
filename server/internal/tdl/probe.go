@@ -15,7 +15,7 @@ type ProbeResult struct {
 	URL        string `json:"url"`
 	ChatTitle  string `json:"chatTitle"`
 	MessageID  int64  `json:"messageId"`
-	Kind       string `json:"kind"` // single | album | group
+	Kind       string `json:"kind"` // single | album | group | channel
 	FileCount  int    `json:"fileCount"`
 	TotalSize  int64  `json:"totalSize"`
 	Title      string `json:"title"`
@@ -92,6 +92,28 @@ func Probe(ctx context.Context, cfg ClientConfig, urls []string) []ProbeResult {
 
 func probeOne(ctx context.Context, api *tg.Client, raw string) ProbeResult {
 	res := ProbeResult{URL: raw}
+
+	// 整频道链接：只做轻量探测（拿标题），文件数/大小由任务启动后的
+	// chat export 阶段填充，避免大频道阻塞创建请求。
+	if chat, private, ok := ChannelLink(raw); ok {
+		res.Kind = "channel"
+		if private {
+			res.ChatTitle = fmt.Sprintf("频道 %s", chat)
+		} else {
+			resolve, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: chat})
+			if err == nil {
+				if _, title := pickResolvedPeer(resolve); title != "" {
+					res.ChatTitle = title
+				}
+			}
+			if res.ChatTitle == "" {
+				res.ChatTitle = chat
+			}
+		}
+		res.Title = fmt.Sprintf("%s · 整频道", res.ChatTitle)
+		return res
+	}
+
 	target, err := parseTmeURL(raw)
 	if err != nil {
 		res.Error = err.Error()

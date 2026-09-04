@@ -1,5 +1,15 @@
 # 版本记录
 
+## v0.4.0（2026-09-04）
+
+- **新功能：整频道下载**。链接不带消息 ID（`https://t.me/c/<id>` 或 `https://t.me/<username>`）即整频道任务：
+  - 探测轻量化：只解析标题（私有频道显示"频道 ID"），不再阻塞创建；真实文件数/大小在任务启动后填充。
+  - 启动后先跑 `tdl chat export -c <chat> --with-content --raw`（导出文件存 `<data-dir>/exports/<taskID>.json`，暂停恢复/重试直接复用），解析出文件名+大小回填任务；再 `tdl dl -f <export> -d <dir>` 批量下载。
+  - SIT 实测：`dl -f` 的 tracker 行与 `-u` 模式完全一致（`{标题}({对话ID}):{消息ID} -> {路径}~`），现有进度解析/glob/删分片逻辑全部兼容；导出 JSON 顶层 `{id, messages:[{id,file,raw}]}`，大小取 `raw.Media.Document.Size`（Photo 取 progressive 最后一档）。
+  - 导出阶段可暂停/取消/删除分片；删除记录时清理导出文件；任务完成后列表回填磁盘真实文件。
+  - 前端：`MediaKind` 加 `channel`，任务/探测项显示"整频道"徽标与 folder 图标。
+- 新增 `tdl/export.go`（链接解析/导出子进程/导出解析）与 `export_test.go`。
+
 ## v0.3.5（2026-09-04）
 
 - **修复"删除分片并取消"实际不删分片**（真凶终于抓到）：tdl v0.20.4 的 tracker 消息实际是「`{标题}({对话ID}):{消息ID} -> {目标路径}`」（`app/dl/progress.go` 的 `elemString`，源码+SIT 抓原始 stdout 双确认），路径过长被 go-pretty 截断成 `~` 结尾。而 0.3.4 的解析正则 `\((\d+)\):(\d+)~` 要求 `~` 紧跟消息 ID，**永远匹配不上** → `filePerc` 恒为空 → 取消时没有 keys 可删、文件列表也一直是占位（组合下载 0/1 的残余根因）。正则改为 `\((\d+)\):(\d+)(?:\s*->\s*\S+)?`，旧格式向后兼容；新增 `progress_test.go` 用实测行做回归用例。

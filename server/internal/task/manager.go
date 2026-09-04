@@ -41,6 +41,7 @@ type Manager struct {
 
 type runner struct {
 	dl      *tdl.RunningDownload
+	export  *tdl.RunningExport // 整频道任务：导出消息列表阶段（dl 启动前置步骤）
 	stop    chan struct{}
 	stopped chan struct{}
 	base    int64   // 启动时目录字节数
@@ -144,22 +145,26 @@ func (m *Manager) Create(in CreateInput) ([]Task, error) {
 			SavePath:  savePath,
 			CreatedAt: time.Now().UnixMilli(),
 		}
-		if pr, ok := in.ProbeResult[url]; ok {
-			t.ChatTitle = pr.ChatTitle
-			t.MessageID = pr.MessageID
-			t.Kind = pr.Kind
-			t.TotalSize = pr.TotalSize
-			t.Name = pr.Title
-			t.Files = placeholderFiles(pr.FileCount, pr.TotalSize, pr.Title)
-		}
-		if t.Name == "" {
-			t.Name = url
-			t.Kind = "single"
-			t.Files = placeholderFiles(1, 0, url)
-		}
-		if in.Group && t.Kind == "single" {
-			t.Kind = "album"
-		}
+	if pr, ok := in.ProbeResult[url]; ok {
+		t.ChatTitle = pr.ChatTitle
+		t.MessageID = pr.MessageID
+		t.Kind = pr.Kind
+		t.TotalSize = pr.TotalSize
+		t.Name = pr.Title
+		t.Files = placeholderFiles(pr.FileCount, pr.TotalSize, pr.Title)
+	}
+	if t.Name == "" {
+		t.Name = url
+		t.Kind = "single"
+		t.Files = placeholderFiles(1, 0, url)
+	}
+	if t.Kind == "channel" {
+		// 整频道任务：真实文件数/大小在启动后的导出阶段填充
+		t.Files = placeholderFiles(1, 0, t.Name)
+	}
+	if in.Group && t.Kind == "single" {
+		t.Kind = "album"
+	}
 		m.tasks = append(m.tasks, t)
 		created = append(created, t.clone())
 	}
@@ -201,8 +206,10 @@ func newID() string {
 var fileRe = regexp.MustCompile(`^\d+_\d+_.+`)
 
 // syncFilesLocked 用 stdout 追踪到的真实文件名重建任务的文件列表。
-// 前提：持有 m.mu 与 runner.fm。每次全量重建，可自愈清理此前误入的
-// 统计行条目；私有频道探测失败导致的占位列表也会被真实数据替换。
+// 前提：持有 m.mu 与 runner.fm。追踪条目全量重建（自愈清理此前误入的
+// 统计行条目）；旧列表中形如真实文件的条目（整频道任务里排队未启动的）
+// 保留为 pending，不丢文件。旧条目的真实大小按名字匹配保留
+// （下载中的名字带 .tmp 后缀，先去掉再比对）。
 func syncFilesLocked(t *Task, percs map[string]float64) {
 	names := make([]string, 0, len(percs))
 	for n := range percs {
@@ -213,25 +220,48 @@ func syncFilesLocked(t *Task, percs map[string]float64) {
 	if len(names) == 0 {
 		return
 	}
-	sort.Strings(names)
 
 	old := make(map[string]File, len(t.Files))
 	for _, f := range t.Files {
 		old[f.Name] = f
 	}
+	lookup := func(name string) (File, bool) {
+		if f, ok := old[name]; ok {
+			return f, true
+		}
+		f, ok := old[strings.TrimSuffix(name, ".tmp")]
+		return f, ok
+	}
+
 	files := make([]File, 0, len(names))
+	seen := make(map[string]bool, len(names))
 	for _, n := range names {
 		id := newID()
-		if of, ok := old[n]; ok {
+		size := int64(0)
+		if of, ok := lookup(n); ok {
 			id = of.ID // 保持 ID 稳定，避免前端列表抖动
+			size = of.Size
 		}
 		p := percs[n]
 		st := StatusDownloading
 		if p >= 100 {
 			st = StatusCompleted
 		}
-		files = append(files, File{ID: id, Name: n, Status: st, Progress: p})
+		files = append(files, File{ID: id, Name: n, Size: size, Status: st, Progress: p})
+		seen[n] = true
 	}
+	// 旧列表里未被追踪的真实文件条目（如整频道任务排队中的）保留
+	for _, f := range t.Files {
+		if seen[f.Name] || !fileRe.MatchString(f.Name) {
+			continue
+		}
+		st := f.Status
+		if st == StatusDownloading {
+			st = StatusPaused
+		}
+		files = append(files, File{ID: f.ID, Name: f.Name, Size: f.Size, Status: st, Progress: f.Progress})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 	t.Files = files
 }
 
@@ -255,11 +285,7 @@ func (m *Manager) Pause(id string) error {
 	m.mu.Unlock()
 
 	if r != nil {
-		r.dl.Stop()
-		select {
-		case <-r.dl.Done:
-		case <-time.After(6 * time.Second):
-		}
+		r.stopProc()
 		close(r.stop)
 		<-r.stopped
 	}
@@ -308,11 +334,7 @@ func (m *Manager) Cancel(id string, deletePartial bool) error {
 	m.mu.Unlock()
 
 	if r != nil {
-		r.dl.Stop()
-		select {
-		case <-r.dl.Done:
-		case <-time.After(6 * time.Second):
-		}
+		r.stopProc()
 		close(r.stop)
 		<-r.stopped
 		if deletePartial {
@@ -459,6 +481,9 @@ func (m *Manager) Remove(ids []string) error {
 	if err := m.opts.Persist.Delete(removed); err != nil {
 		return err
 	}
+	for _, id := range removed {
+		_ = os.Remove(m.exportPath(id))
+	}
 	return nil
 }
 
@@ -476,6 +501,18 @@ func (m *Manager) ClearHistory() error {
 	m.tasks = kept
 	if err := m.opts.Persist.DeleteFinished(); err != nil {
 		return err
+	}
+	// 清理所有已不在列表中的整频道导出文件
+	entries, _ := os.ReadDir(filepath.Join(m.opts.DataDir, "exports"))
+	alive := make(map[string]bool, len(m.tasks))
+	for _, t := range m.tasks {
+		alive[t.ID] = true
+	}
+	for _, e := range entries {
+		id := strings.TrimSuffix(e.Name(), ".json")
+		if !alive[id] {
+			_ = os.Remove(filepath.Join(m.opts.DataDir, "exports", e.Name()))
+		}
 	}
 	return nil
 }
@@ -538,7 +575,7 @@ func (m *Manager) startLocked(task *Task) {
 		Exclude:   nil,
 	}
 
-	dl, err := tdl.Start(ctx, opts, func(line string) {
+	onLine := func(line string) {
 		if s, ok := tdl.ParseProgressLine(line); ok {
 			// 多文件并行时每个 tracker 各有一行，取最大百分比近似总进度
 			if s.Percent > r.percent {
@@ -559,7 +596,39 @@ func (m *Manager) startLocked(task *Task) {
 				r.fm.Unlock()
 			}
 		}
-	})
+	}
+
+	if task.Kind == "channel" {
+		// 整频道任务：先导出频道媒体消息列表，再以 -f 模式批量下载
+		m.wg.Add(1)
+		go func() {
+			defer m.wg.Done()
+			defer cancel()
+			exportPath := m.exportPath(task.ID)
+			if !m.runChannelExport(task, r, ctx, tdl.ExportOptions{
+				TdlPath:   m.opts.TdlPath,
+				DataDir:   m.opts.TdlDataDir,
+				Namespace: m.opts.Namespace,
+				Proxy:     cfg.Proxy,
+				Chat:      m.chatFromURL(task.URL),
+				Output:    exportPath,
+			}) {
+				return // 已终止或失败
+			}
+			opts.File = exportPath
+			opts.Group = false // 导出列表已含全部相册消息，无需 tdl 再分组
+			dl, err := tdl.Start(ctx, opts, onLine)
+			if err != nil {
+				m.failTask(task, r, err.Error())
+				return
+			}
+			r.setDL(dl)
+			m.watchTask(task, r)
+		}()
+		return
+	}
+
+	dl, err := tdl.Start(ctx, opts, onLine)
 	if err != nil {
 		task.Status = StatusFailed
 		task.Error = err.Error()
@@ -569,7 +638,7 @@ func (m *Manager) startLocked(task *Task) {
 		m.persistLocked()
 		return
 	}
-	r.dl = dl
+	r.setDL(dl)
 
 	m.wg.Add(1)
 	go func() {
@@ -577,6 +646,124 @@ func (m *Manager) startLocked(task *Task) {
 		defer cancel()
 		m.watchTask(task, r)
 	}()
+}
+
+// exportPath 整频道任务的消息导出文件路径。
+func (m *Manager) exportPath(taskID string) string {
+	return filepath.Join(m.opts.DataDir, "exports", taskID+".json")
+}
+
+// chatFromURL 从整频道链接提取 chat 标识（数字 ID 或用户名）。
+// 解析失败返回原链接（交由 tdl 报错）。
+func (m *Manager) chatFromURL(raw string) string {
+	if chat, _, ok := tdl.ChannelLink(raw); ok {
+		return chat
+	}
+	return raw
+}
+
+// setDL / setExport / getProc 带锁维护 runner 的子进程引用，
+// 供 Pause/Cancel 与任务 goroutine 安全交接。
+func (r *runner) setDL(dl *tdl.RunningDownload) {
+	r.fm.Lock()
+	r.dl = dl
+	r.fm.Unlock()
+}
+
+func (r *runner) setExport(ex *tdl.RunningExport) {
+	r.fm.Lock()
+	r.export = ex
+	r.fm.Unlock()
+}
+
+// stopProc 终止 runner 当前子进程（下载或导出）并等待其退出。
+func (r *runner) stopProc() {
+	r.fm.Lock()
+	dl, ex := r.dl, r.export
+	r.fm.Unlock()
+	switch {
+	case dl != nil:
+		dl.Stop()
+		select {
+		case <-dl.Done:
+		case <-time.After(6 * time.Second):
+		}
+	case ex != nil:
+		ex.Stop()
+		select {
+		case <-ex.Done:
+		case <-time.After(6 * time.Second):
+		}
+	}
+}
+
+// runChannelExport 整频道任务第一步：导出频道媒体消息列表并回填文件信息。
+// 返回 false 表示任务已终止或失败。导出文件已存在时直接复用（暂停恢复/重试）。
+func (m *Manager) runChannelExport(task *Task, r *runner, ctx context.Context, opts tdl.ExportOptions) bool {
+	path := opts.Output
+	if _, err := os.Stat(path); err != nil {
+		ex, err := tdl.StartExport(ctx, opts)
+		if err != nil {
+			m.failTask(task, r, "导出频道消息失败: "+err.Error())
+			return false
+		}
+		r.setExport(ex)
+		select {
+		case err := <-ex.Done:
+			r.setExport(nil)
+			if err != nil {
+				m.failTask(task, r, "导出频道消息失败: "+trimErr(err))
+				return false
+			}
+		case <-r.stop:
+			ex.Stop()
+			<-ex.Done
+			r.setExport(nil)
+			close(r.stopped)
+			return false
+		}
+	}
+
+	files, err := tdl.ParseExportFile(path)
+	if err != nil {
+		_ = os.Remove(path) // 损坏的导出文件不留着，重试时会重新导出
+		m.failTask(task, r, "解析频道导出文件失败: "+err.Error())
+		return false
+	}
+
+	// 把真实文件列表与总大小写回任务（前端轮询即可见）
+	total := int64(0)
+	for _, f := range files {
+		total += f.Size
+	}
+	m.mu.Lock()
+	if task.Status == StatusDownloading {
+		task.TotalSize = total
+		fl := make([]File, 0, len(files))
+		for _, f := range files {
+			fl = append(fl, File{ID: newID(), Name: f.Name, Size: f.Size, Status: StatusPending})
+		}
+		task.Files = fl
+		m.persistLocked()
+	}
+	m.mu.Unlock()
+	return true
+}
+
+// failTask 标记任务失败并清理调度状态。
+func (m *Manager) failTask(task *Task, r *runner, msg string) {
+	m.mu.Lock()
+	if task.Status.Active() {
+		task.Status = StatusFailed
+		task.Error = msg
+		task.Speed = 0
+		task.FinishedAt = time.Now().UnixMilli()
+	}
+	delete(m.running, task.ID)
+	m.persistLocked()
+	m.pumpLocked()
+	m.mu.Unlock()
+	close(r.stopped)
 }
 
 // watchTask 监控任务直到结束：目录大小差分为主，stdout 百分比为兜底。

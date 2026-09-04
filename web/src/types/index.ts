@@ -23,7 +23,7 @@ export interface CountryCode {
 export type TaskStatus = 'pending' | 'downloading' | 'paused' | 'completed' | 'failed' | 'canceled'
 
 /** 消息类型：单条 / 相册 / 组合消息 */
-export type MediaKind = 'single' | 'album' | 'group'
+export type MediaKind = 'single' | 'album' | 'group' | 'channel'
 
 export interface DownloadFile {
   id: string

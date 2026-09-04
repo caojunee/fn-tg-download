@@ -55,7 +55,11 @@ const urlList = computed(() =>
 
 const totalFiles = computed(() => results.value.reduce((s, r) => s + r.fileCount, 0))
 const totalSize = computed(() => results.value.reduce((s, r) => s + r.totalSize, 0))
-const albumCount = computed(() => results.value.filter((r) => r.kind !== 'single').length)
+const albumCount = computed(
+  () => results.value.filter((r) => r.kind !== 'single' && r.kind !== 'channel').length,
+)
+const channelCount = computed(() => results.value.filter((r) => r.kind === 'channel').length)
+const kindIcon = (kind: string) => (kind === 'single' ? 'file' : kind === 'channel' ? 'folder' : 'layers')
 
 function fillSample() {
   rawUrls.value = [SAMPLE, 'https://t.me/tdl/1'].join('\n')
@@ -186,23 +190,30 @@ async function onStart() {
               <span v-if="albumCount" class="new__album-tip">
                 检测到 {{ albumCount }} 组相册 / 组合消息
               </span>
+              <span v-if="channelCount" class="new__album-tip">
+                检测到 {{ channelCount }} 个整频道任务
+              </span>
             </div>
           </div>
 
           <div class="app-card__body new__results">
             <div v-for="(item, index) in results" :key="item.url" class="probe">
               <div class="probe__icon" :class="`probe__icon--${item.kind}`">
-                <AppIcon :name="item.kind === 'single' ? 'file' : 'layers'" :size="17" />
+                <AppIcon :name="kindIcon(item.kind)" :size="17" />
               </div>
               <div class="probe__body">
                 <div class="probe__title">{{ item.title }}</div>
                 <div class="probe__meta">
                   <span class="probe__url">{{ item.url }}</span>
-                  <span>{{ item.fileCount }} 个文件</span>
-                  <span>{{ formatSize(item.totalSize) }}</span>
+                  <span v-if="item.kind === 'channel'" class="probe__channel-tip">文件数在任务启动后统计</span>
+                  <template v-else>
+                    <span>{{ item.fileCount }} 个文件</span>
+                    <span>{{ formatSize(item.totalSize) }}</span>
+                  </template>
                 </div>
               </div>
-              <span v-if="item.kind !== 'single'" class="probe__badge"> 相册 / 组合消息 </span>
+              <span v-if="item.kind === 'channel'" class="probe__badge"> 整频道下载 </span>
+              <span v-else-if="item.kind !== 'single'" class="probe__badge"> 相册 / 组合消息 </span>
               <span class="probe__remove" @click="removeResult(index)">
                 <AppIcon name="close" :size="14" />
               </span>
@@ -432,6 +443,11 @@ async function onStart() {
       color: $color-primary;
       background: $color-primary-light;
     }
+
+    &--channel {
+      color: $color-success;
+      background: rgba(82, 196, 26, 0.12);
+    }
   }
 
   &__body {
@@ -458,6 +474,10 @@ async function onStart() {
 
   &__url {
     font-family: Consolas, Monaco, monospace;
+    color: $color-text-placeholder;
+  }
+
+  &__channel-tip {
     color: $color-text-placeholder;
   }
 
