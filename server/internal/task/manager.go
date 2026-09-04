@@ -48,6 +48,8 @@ type runner struct {
 	percent float64 // stdout 解析到的百分比（totalSize 未知时的兜底）
 	speed   float64 // stdout 解析到的瞬时速率（字节/秒）
 
+	expectedFiles int // 探测/导出阶段已知的期望文件数，首次同步时捕获
+
 	fm          sync.Mutex         // 保护 filePerc/fileNames（onLine 与 watchTask 不同 goroutine）
 	filePerc    map[string]float64 // stdout 追踪到的下载单元 → 最新百分比，键为 "对话ID_消息ID"
 	fileNames   map[string]string  // 已解析到的真实磁盘文件名，键同上（可能滞后一拍）
@@ -216,7 +218,9 @@ var fileRe = regexp.MustCompile(`^\d+_\d+_.+`)
 // 统计行条目）；旧列表中形如真实文件的条目（整频道任务里排队未启动的）
 // 保留为 pending，不丢文件。旧条目的真实大小按名字匹配保留
 // （下载中的名字带 .tmp 后缀，先去掉再比对）。
-func syncFilesLocked(t *Task, percs map[string]float64) {
+// expected 为探测/导出阶段已知的期望文件数：tracker 只覆盖正在下载的
+// 单元，排队未开始的文件会在此补回占位条目，保持列表与磁盘一致。
+func syncFilesLocked(t *Task, percs map[string]float64, expected int) {
 	names := make([]string, 0, len(percs))
 	for n := range percs {
 		if fileRe.MatchString(n) {
@@ -242,10 +246,10 @@ func syncFilesLocked(t *Task, percs map[string]float64) {
 			id = of.ID // 保持 ID 稳定，避免前端列表抖动
 			size = of.Size
 		}
-		if size == 0 {
-			// 自愈：历史条目 size 丢失（或从未拿到）时从磁盘读，
-			// fileSize 兼容下载中带 .tmp 后缀的名字
-			size = fileSize(t.SavePath, n)
+		// 磁盘字节数优先：占位期均分的估算 size（或坏数据）以磁盘为准；
+		// 导出得到的真实总大小大于已下载字节时保留原值
+		if ds := fileSize(t.SavePath, n); ds > size {
+			size = ds
 		}
 		p := percs[n]
 		st := StatusDownloading
@@ -267,8 +271,21 @@ func syncFilesLocked(t *Task, percs map[string]float64) {
 		if st == StatusDownloading {
 			st = StatusPaused
 		}
-		files = append(files, File{ID: f.ID, Name: name, Size: f.Size, Status: st, Progress: f.Progress})
+		size := f.Size
+		if ds := fileSize(t.SavePath, name); ds > size {
+			size = ds
+		}
+		files = append(files, File{ID: f.ID, Name: name, Size: size, Status: st, Progress: f.Progress})
 		seen[name] = true
+	}
+	// 排队未开始的文件补占位：tracker 行只覆盖正在下载的单元，
+	// 不补的话探测已知的文件会从列表消失（界面 0/2 而磁盘 3 个分片）
+	for i := len(files); i < expected; i++ {
+		files = append(files, File{
+			ID:      fmt.Sprintf("q_%s_%d", t.ID, i),
+			Name:    fmt.Sprintf("%s · 排队 %d", t.Name, i+1),
+			Status:  StatusPending,
+		})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 	t.Files = files
@@ -812,6 +829,17 @@ func (m *Manager) watchTask(task *Task, r *runner) {
 				}
 				// 用 stdout 追踪到的真实文件列表修正占位数据
 				r.fm.Lock()
+				// 期望文件数：首次同步前捕获（此刻列表还是探测/导出的完整
+				// 列表），并提升到磁盘分片前缀数（历史任务列表可能已丢条目，
+				// 而 tdl 预创建全部分片，磁盘 key 数即真实文件数下限）
+				if r.expectedFiles == 0 {
+					r.expectedFiles = len(task.Files)
+				}
+				expected := r.expectedFiles
+				if k := diskKeyCount(task.SavePath); k > expected {
+					expected = k
+					r.expectedFiles = k
+				}
 				if len(r.filePerc) > 0 {
 					percs := make(map[string]float64, len(r.filePerc))
 					for key, p := range r.filePerc {
@@ -820,7 +848,7 @@ func (m *Manager) watchTask(task *Task, r *runner) {
 						}
 					}
 					if len(percs) > 0 {
-						syncFilesLocked(task, percs)
+						syncFilesLocked(task, percs, expected)
 					}
 				}
 				r.fm.Unlock()
@@ -995,6 +1023,30 @@ func dirSize(dir string) int64 {
 		}
 	}
 	return total
+}
+
+// diskKeyRe 从磁盘文件名提取下载单元前缀（"对话ID_消息ID"）。
+// tdl 按模板 {对话ID}_{消息ID}_{文件名}[.tmp] 落盘，同一单元一个文件。
+var diskKeyRe = regexp.MustCompile(`^(\d+_\d+)_`)
+
+// diskKeyCount 统计目录中出现的下载单元数。tdl 会为全部待下载文件
+// 预创建分片，即使尚未开始下载，因此该数是任务真实文件数的下限，
+// 用于修复列表丢条目后 expected 无法恢复的问题。
+func diskKeyCount(dir string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if m := diskKeyRe.FindStringSubmatch(e.Name()); m != nil {
+			seen[m[1]] = true
+		}
+	}
+	return len(seen)
 }
 
 // Shutdown 停止所有运行中的任务（服务关闭时调用）。
