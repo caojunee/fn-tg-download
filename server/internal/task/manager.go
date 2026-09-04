@@ -898,6 +898,14 @@ func (m *Manager) finishTask(task *Task, r *runner, exitErr error) {
 				task.DownloadedSize = task.TotalSize
 			}
 			fillFilesFinal(task, r)
+			if len(task.Files) == 0 {
+				// 空跑兜底：tdl 正常退出但没下载到任何文件（纯文本消息、
+				// 全部被过滤等），标记失败并说明原因，避免误导性的
+				// "completed 0 文件"
+				task.Status = StatusFailed
+				task.Error = "未下载到任何文件（消息可能不包含媒体或已失效）"
+				task.Progress = 0
+			}
 		}
 		task.Speed = 0
 		task.FinishedAt = time.Now().UnixMilli()

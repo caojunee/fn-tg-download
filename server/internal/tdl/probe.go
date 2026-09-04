@@ -151,6 +151,11 @@ func probeOne(ctx context.Context, api *tg.Client, raw string) ProbeResult {
 		res.Error = "message not found (may have been deleted, or is not visible to the current account)"
 		return res
 	}
+	if !hasMedia(main) {
+		// 纯文本消息：tdl 空跑（completed 0 文件），在探测阶段拦截
+		res.Error = "message contains no downloadable media (text only)"
+		return res
+	}
 
 	// 相册 / 组合消息探测
 	var mediaMsgs []*tg.Message
@@ -351,6 +356,18 @@ func channelHash(resolve *tg.ContactsResolvedPeer, id int64) int64 {
 		}
 	}
 	return 0
+}
+
+// IsPrivateLink 判断是否 c/<id> 形式的私有链接（整频道或消息级）。
+// 此类链接探测拿不到 access hash 属预期，创建任务时应放行（下载由
+// tdl 自身的 peers 缓存兜底）；其余探测失败的链接应拦截。
+func IsPrivateLink(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if _, private, ok := ChannelLink(raw); ok {
+		return private
+	}
+	m := tmeRe.FindStringSubmatch(raw)
+	return m != nil && m[2] != ""
 }
 
 // DirNameForURL 返回该链接的下载子目录名（已 sanitize），实现

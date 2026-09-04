@@ -25,6 +25,24 @@ func TestSanitizeDirName(t *testing.T) {
 	}
 }
 
+func TestIsPrivateLink(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"https://t.me/c/4434014100/2", true},
+		{"https://t.me/c/4434014100", true},
+		{"https://t.me/mylove4877/896", false},
+		{"https://t.me/mylove4877", false},
+		{"https://example.com/x", false},
+	}
+	for _, c := range cases {
+		if got := IsPrivateLink(c.url); got != c.want {
+			t.Errorf("IsPrivateLink(%q) = %v, want %v", c.url, got, c.want)
+		}
+	}
+}
+
 func TestDirNameForURL(t *testing.T) {
 	cases := []struct {
 		url, title, want string

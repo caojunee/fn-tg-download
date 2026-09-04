@@ -213,9 +213,24 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 			probeMap[pr.URL] = pr
 		}
 	}
+	// 拦截探测失败且非私有链接的 URL：纯文本消息（tdl 空跑）、消息
+	// 不存在、链接不支持等。私有链接探测失败属预期，放行由 tdl 兜底。
+	valid := make([]string, 0, len(urls))
+	reasons := make([]string, 0)
+	for _, u := range urls {
+		if pr := probeMap[u]; pr.Error != "" && !tdl.IsPrivateLink(u) {
+			reasons = append(reasons, u+"：探测失败，已跳过（"+pr.Error+"）")
+			continue
+		}
+		valid = append(valid, u)
+	}
+	if len(valid) == 0 {
+		fail(w, codeBizErr, "没有可下载的链接\n"+strings.Join(reasons, "\n"))
+		return
+	}
 
 	tasks, err := s.tasks.Create(task.CreateInput{
-		URLs:        urls,
+		URLs:        valid,
 		Group:       req.Group,
 		SavePath:    req.SavePath,
 		Include:     splitCSV(req.Include),
@@ -227,6 +242,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w, tasks)
+	if len(reasons) > 0 {
+		// 部分链接被跳过时附带原因（跟随响应体，前端可展示）
+		w.Header().Set("X-Skipped-Reasons", strings.Join(reasons, "\n"))
+	}
 }
 
 func (s *Server) handleListTasks(w http.ResponseWriter, _ *http.Request) {
