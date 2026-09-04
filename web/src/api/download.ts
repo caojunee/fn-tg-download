@@ -1,5 +1,6 @@
-import type { CreateDownloadPayload, DownloadTask, MediaKind } from '@/types'
-import { USE_MOCK, httpGet, httpPost } from './request'
+import type { ApiResult, CreateDownloadPayload, DownloadTask, MediaKind } from '@/types'
+import { showToast } from 'vant'
+import { USE_MOCK, httpGet, httpPost, service } from './request'
 
 /** 解析结果：探测链接是单条消息还是相册 / 组合消息 */
 export interface ProbeResult {
@@ -28,7 +29,11 @@ export async function createDownload(payload: CreateDownloadPayload): Promise<Do
       group: payload.group,
       savePath: payload.savePath,
     })
-  return httpPost<DownloadTask[]>('/download/create', payload)
+  // 部分链接探测失败被跳过时，后端在 X-Skipped-Reasons 响应头里带原因
+  const res = await service.post<ApiResult<DownloadTask[]>>('/download/create', payload)
+  const skipped = res.headers['x-skipped-reasons'] as string | undefined
+  if (skipped) showToast(skipped.replace(/\n/g, '；'))
+  return res.data.data
 }
 
 export async function listTasks(): Promise<DownloadTask[]> {
