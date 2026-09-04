@@ -59,6 +59,11 @@ const albumCount = computed(
   () => results.value.filter((r) => r.kind !== 'single' && r.kind !== 'channel').length,
 )
 const channelCount = computed(() => results.value.filter((r) => r.kind === 'channel').length)
+/** 私有链接（t.me/c/...）：探测失败（无 access hash 缓存）时单独提示 */
+const privateCount = computed(
+  () => results.value.filter((r) => r.error && isPrivateUrl(r.url)).length,
+)
+const isPrivateUrl = (u: string) => /^https?:\/\/t\.me\/c\//i.test(u)
 const kindIcon = (kind: string) => (kind === 'single' ? 'file' : kind === 'channel' ? 'folder' : 'layers')
 
 function fillSample() {
@@ -193,6 +198,9 @@ async function onStart() {
               <span v-if="channelCount" class="new__album-tip">
                 检测到 {{ channelCount }} 个整频道任务
               </span>
+              <span v-if="privateCount" class="new__album-tip">
+                其中 {{ privateCount }} 条私有链接启动后统计
+              </span>
             </div>
           </div>
 
@@ -206,6 +214,10 @@ async function onStart() {
                 <div class="probe__meta">
                   <span class="probe__url">{{ item.url }}</span>
                   <span v-if="item.kind === 'channel'" class="probe__channel-tip">文件数在任务启动后统计</span>
+                  <span
+                    v-else-if="item.error && isPrivateUrl(item.url)"
+                    class="probe__channel-tip"
+                  >私有链接 · 文件数在任务启动后统计</span>
                   <template v-else>
                     <span>{{ item.fileCount }} 个文件</span>
                     <span>{{ formatSize(item.totalSize) }}</span>
@@ -213,6 +225,7 @@ async function onStart() {
                 </div>
               </div>
               <span v-if="item.kind === 'channel'" class="probe__badge"> 整频道下载 </span>
+              <span v-else-if="item.error && isPrivateUrl(item.url)" class="probe__badge"> 私有链接 </span>
               <span v-else-if="item.kind !== 'single'" class="probe__badge"> 相册 / 组合消息 </span>
               <span class="probe__remove" @click="removeResult(index)">
                 <AppIcon name="close" :size="14" />

@@ -1,5 +1,11 @@
 # 版本记录
 
+## v0.4.6（2026-09-04）
+
+- **私有链接真实探测**：probe 阶段从 tdl 的 peers 缓存（bolt，key `peers:key:channel_:<id>`，value `{"AccessHash":...}`）读取 access hash，`t.me/c/<id>/<msg>` 命中缓存即可完整探测（类型/文件数/大小/真实标题，`ChannelsGetFullChannel` 取标题）；整频道私有链接也取真实标题。未命中缓存的兜底行为不变（放行创建，前端标「私有链接 · 启动后统计」）。
+- **移动端 stepper 换行修复**：窄屏下 `.opt` flex 压缩 `van-stepper`（inline-block 内容会折行）导致 +/- 换行；改 `.opt__main { flex: 1 }` + `.van-stepper { flex-shrink: 0; white-space: nowrap }`。
+- 顺带发现：`go.mod` 要求 go≥1.25，本机需 `GOTOOLCHAIN=go1.25.0`（模块缓存已有 toolchain@v0.0.1-go1.25.0）。
+
 ## v0.4.5（2026-09-04）
 
 - **单并发下载（tdl -l 2 → 1）**：tdl 内核断点续传为「文件级」（仅记录已完成文件，半成品 .tmp 恢复时截断重下，实测多并发暂停时 2 个文件同时损失进度）。改单并发后暂停/失败最多只损失 1 个文件的部分进度；已完成文件仍靠 `--continue`+`--skip-same` 秒跳过。

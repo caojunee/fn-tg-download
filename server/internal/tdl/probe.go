@@ -2,6 +2,7 @@ package tdl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -59,6 +60,49 @@ func ato64(s string) int64 {
 	return v
 }
 
+func ato64err(s string) (int64, error) {
+	return strconv.ParseInt(s, 10, 64)
+}
+
+// tdl peers 缓存的键与值格式（bolt，bucket=namespace）：
+//
+//	key   = peers:key:channel_:<channel_id>
+//	value = {"AccessHash":<int64>}
+type peerKVValue struct {
+	AccessHash int64 `json:"AccessHash"`
+}
+
+// cachedChannelHash 从 tdl 的 peers 缓存读取私有频道的 access hash。
+// 该缓存由 tdl 下载/登录时自动写入，命中即可在探测阶段访问私有频道。
+func cachedChannelHash(kv *BoltKV, id int64) (int64, bool) {
+	if kv == nil {
+		return 0, false
+	}
+	v, err := kv.Get(context.Background(), fmt.Sprintf("peers:key:channel_:%d", id))
+	if err != nil {
+		return 0, false
+	}
+	var pv peerKVValue
+	if json.Unmarshal(v, &pv) != nil {
+		return 0, false
+	}
+	return pv.AccessHash, true
+}
+
+// channelTitle 通过 ChannelsGetFullChannel 拿私有频道真实标题，失败返回空串。
+func channelTitle(ctx context.Context, api *tg.Client, id, hash int64) string {
+	full, err := api.ChannelsGetFullChannel(ctx, &tg.InputChannel{ChannelID: id, AccessHash: hash})
+	if err != nil {
+		return ""
+	}
+	for _, c := range full.Chats {
+		if ch, ok := c.(*tg.Channel); ok && ch.ID == id && ch.Title != "" {
+			return ch.Title
+		}
+	}
+	return ""
+}
+
 // Probe 解析一批链接，探测消息类型（单条/相册/组合消息）、文件数与总大小。
 // 使用已登录的 session 建立连接。
 func Probe(ctx context.Context, cfg ClientConfig, urls []string) []ProbeResult {
@@ -76,7 +120,7 @@ func Probe(ctx context.Context, cfg ClientConfig, urls []string) []ProbeResult {
 	err = client.Run(ctx, func(ctx context.Context) error {
 		api := tg.NewClient(client)
 		for i, raw := range urls {
-			results[i] = probeOne(ctx, api, raw)
+			results[i] = probeOne(ctx, api, kv, raw)
 		}
 		return nil
 	})
@@ -90,7 +134,7 @@ func Probe(ctx context.Context, cfg ClientConfig, urls []string) []ProbeResult {
 	return results
 }
 
-func probeOne(ctx context.Context, api *tg.Client, raw string) ProbeResult {
+func probeOne(ctx context.Context, api *tg.Client, kv *BoltKV, raw string) ProbeResult {
 	res := ProbeResult{URL: raw}
 
 	// 整频道链接：只做轻量探测（拿标题），文件数/大小由任务启动后的
@@ -99,6 +143,14 @@ func probeOne(ctx context.Context, api *tg.Client, raw string) ProbeResult {
 		res.Kind = "channel"
 		if private {
 			res.ChatTitle = fmt.Sprintf("频道 %s", chat)
+			// tdl peers 缓存里有该频道的 access hash 时，取真实标题
+			if id, err := ato64err(chat); err == nil {
+				if hash, ok := cachedChannelHash(kv, id); ok {
+					if title := channelTitle(ctx, api, id, hash); title != "" {
+						res.ChatTitle = title
+					}
+				}
+			}
 		} else {
 			resolve, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: chat})
 			if err == nil {
@@ -121,24 +173,37 @@ func probeOne(ctx context.Context, api *tg.Client, raw string) ProbeResult {
 	}
 	res.MessageID = target.msg
 
+	var peer tg.InputPeerClass
 	if target.internalID != 0 {
-		// 私有频道（c/xxx）需要 access hash，只能从会话缓存取，
-		// 探测阶段拿不到；下载阶段由 tdl 自身的 peers 缓存处理。
-		res.Error = "private channel link cannot be probed without cached access hash; the download itself is still supported by tdl"
-		return res
+		// 私有频道（c/xxx）：从 tdl 的 peers 缓存读 access hash
+		//（此前登录/下载过该频道即有缓存），缓存命中即可完整探测；
+		// 未命中则放行创建，由 tdl 下载时自行兜底。
+		hash, ok := cachedChannelHash(kv, target.internalID)
+		if !ok {
+			res.ChatTitle = fmt.Sprintf("频道 %d", target.internalID)
+			res.Title = fmt.Sprintf("%s #%d", res.ChatTitle, target.msg)
+			res.Error = "private channel link cannot be probed without cached access hash; the download itself is still supported by tdl"
+			return res
+		}
+		peer = &tg.InputPeerChannel{ChannelID: target.internalID, AccessHash: hash}
+		res.ChatTitle = channelTitle(ctx, api, target.internalID, hash)
+		if res.ChatTitle == "" {
+			res.ChatTitle = fmt.Sprintf("频道 %d", target.internalID)
+		}
+	} else {
+		resolve, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: target.username})
+		if err != nil {
+			res.Error = fmt.Sprintf("failed to resolve channel: %v", err)
+			return res
+		}
+		p, chatTitle := pickResolvedPeer(resolve)
+		if p == nil {
+			res.Error = "failed to resolve peer"
+			return res
+		}
+		peer = p
+		res.ChatTitle = chatTitle
 	}
-
-	resolve, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: target.username})
-	if err != nil {
-		res.Error = fmt.Sprintf("failed to resolve channel: %v", err)
-		return res
-	}
-	peer, chatTitle := pickResolvedPeer(resolve)
-	if peer == nil {
-		res.Error = "failed to resolve peer"
-		return res
-	}
-	res.ChatTitle = chatTitle
 
 	msgs, err := fetchMessages(ctx, api, peer, target.msg)
 	if err != nil {
@@ -193,9 +258,9 @@ func probeOne(ctx context.Context, api *tg.Client, raw string) ProbeResult {
 	if res.FileCount == 1 {
 		res.Kind = "single"
 	}
-	res.Title = fmt.Sprintf("%s #%d", chatTitle, target.msg)
+	res.Title = fmt.Sprintf("%s #%d", res.ChatTitle, target.msg)
 	if res.Kind == "album" {
-		res.Title = fmt.Sprintf("%s #%d · Album (%d items)", chatTitle, target.msg, res.FileCount)
+		res.Title = fmt.Sprintf("%s #%d · Album (%d items)", res.ChatTitle, target.msg, res.FileCount)
 	}
 	return res
 }

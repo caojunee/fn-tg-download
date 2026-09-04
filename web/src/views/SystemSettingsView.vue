@@ -351,7 +351,14 @@ async function onTestProxy() {
   gap: 12px;
 
   &__main {
+    flex: 1;
     min-width: 0;
+  }
+
+  // 移动端窄屏下 stepper 会被 flex 压缩导致 +/- 换行，禁止收缩与折行
+  :deep(.van-stepper) {
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   &__title {
