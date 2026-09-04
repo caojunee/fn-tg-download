@@ -228,6 +228,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		fail(w, codeBizErr, "没有可下载的链接\n"+strings.Join(reasons, "\n"))
 		return
 	}
+	// 响应头必须在写响应体之前设置（WriteHeader 之后再 Set 会静默失效）
+	if len(reasons) > 0 {
+		w.Header().Set("X-Skipped-Reasons", strings.Join(reasons, "\n"))
+	}
 
 	tasks, err := s.tasks.Create(task.CreateInput{
 		URLs:        valid,
@@ -242,10 +246,6 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w, tasks)
-	if len(reasons) > 0 {
-		// 部分链接被跳过时附带原因（跟随响应体，前端可展示）
-		w.Header().Set("X-Skipped-Reasons", strings.Join(reasons, "\n"))
-	}
 }
 
 func (s *Server) handleListTasks(w http.ResponseWriter, _ *http.Request) {

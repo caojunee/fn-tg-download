@@ -862,10 +862,19 @@ func (m *Manager) watchTask(task *Task, r *runner) {
 						p = 0
 					}
 					task.Progress = p
-				case r.percent > 0:
-					if r.percent > task.Progress || task.Progress > 100 {
-						task.Progress = r.percent
+			case r.percent > 0:
+				// stdout 百分比是"最大 tracker 百分比"，多文件任务中首个
+				// 单元完成即为 100%，但其余仍在下载——封顶 99 避免误导，
+				// 完成时由 finishTask 置 100
+				if r.percent > task.Progress || task.Progress > 100 {
+					p := r.percent
+					if p > 99 {
+						p = 99
 					}
+					if task.Progress < p {
+						task.Progress = p
+					}
+				}
 				}
 				m.persistLocked()
 			}

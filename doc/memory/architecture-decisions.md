@@ -30,3 +30,12 @@
 
 - v0.1.0–v0.2.8：Pillow 程序化生成的蓝渐变方块 + send 纸飞机（对齐 login__logo 规格：渐变 `#37bcf0→#2196d9` 135°，圆角 13/44≈30%，纸飞机占 50%）。
 - v0.3.0：改用用户指定 `I:/my_project/logo.png`（Go gopher 骑纸飞机，1100×1000 RGBA 透明底），Pillow 居中方形化 + 4% 边距 + LANCZOS。
+
+## 5. 下载管线（0.4.x 定型）
+
+- **统一子进程模型**：所有下载走 tdl 子进程，进度靠解析 stdout tracker 行（`{标题}({对话ID}):{消息ID} -> {截断路径}~ ... P%`），绝不依赖 tdl 的文件名输出（它不含文件名）；磁盘文件名按模板 `{对话ID}_{消息ID}_{文件名}[.tmp]` 从目录 glob 关联。
+- **文件列表统一最终名**：tdl 下载中带 `.tmp` 后缀、完成自动改名。列表全程存去掉 `.tmp` 的最终名（resolveFileNames / syncFilesLocked / fillFilesFinal 三处统一），ID/Size 跨改名接续，size 以磁盘字节为准（导出的真实总大小更大时保留）。教训：名字不一致会导致暂停恢复后同一文件出现两条（0.4.2 前的 2/5 问题）。
+- **排队文件占位**：tracker 只覆盖正在下载的单元；syncFilesLocked 按 expected（首次捕获列表长 与 磁盘分片前缀数 diskKeyCount 取大）补回「排队」占位，保持界面与磁盘一致。
+- **整频道下载两段式**：链接不带消息 ID 即整频道。启动后先 `tdl chat export -c <chat> --with-content --raw`（存 data/exports/<taskID>.json，恢复/重试复用，删除记录时清理），解析文件名+大小回填任务；再 `tdl dl -f <export>` 批量下载——dl -f 的 tracker 行与 -u 完全一致，进度/暂停/删分片逻辑零改动复用。
+- **目录规则**：任务保存路径拼 `<频道名>` 子目录（DirNameForURL：探测标题优先，私有频道 c/<id> 回退用 <id>，公开用 username；SanitizeDirName 清洗非法字符，空结果不分子目录）。
+- **探测分层**：公开频道 gotd 直连探测（标题/媒体/大小）；私有链接探测失败属预期（无 access hash），创建放行、下载靠 tdl peers 缓存兜底；纯文本消息 probe 报错，创建入口过滤（私有链接除外），完成 0 文件兜底置失败。

@@ -5,6 +5,9 @@
 - **纯文本消息拦截**（遗留边界）：probe 阶段检测消息无媒体即报错；创建入口过滤「探测失败且非私有链接」的 URL（私有链接探测失败属预期，放行由 tdl 兜底）；下载完成但 0 文件时置失败并提示，杜绝误导性的 "completed 0 文件" 空跑。
 - README 功能表同步 0.4.x 特性（整频道下载、目录规则、排队占位）。
 - 前端：createDownload 读取 `X-Skipped-Reasons` 响应头，部分链接被跳过时 toast 展示原因。
+- 修复 X-Skipped-Reasons 响应头在写响应体之后设置导致静默失效（Go Header 须在 WriteHeader 前设置）。
+- 修复多文件任务总进度提前 100%：stdout 百分比兜底取最大 tracker 值，首个单元完成即满——封顶 99，完成时置 100。
+- doc/memory/architecture-decisions.md 补「下载管线（0.4.x 定型）」章节。
 - 版本三处同步 0.4.4。
 
 ## v0.4.3（2026-09-04）
