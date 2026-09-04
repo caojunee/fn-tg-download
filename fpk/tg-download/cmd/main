@@ -49,16 +49,12 @@ start_process() {
 
     mkdir -p "${DATA_DIR}" "${TDL_DATA_DIR}"
 
-    # 登录态预置/迁移到官方默认位置 ~/.tdl/data：
-    # 目标不存在时，优先取旧位置 var/tdl-data/data（0.3.1 及以前），其次取包内 presets
-    if [ ! -f "${TDL_DATA_DIR}/default" ]; then
-        if [ -f "${TRIM_PKGVAR}/tdl-data/data/default" ]; then
-            cp -f "${TRIM_PKGVAR}/tdl-data/data/default" "${TDL_DATA_DIR}/default" \
-                && log_msg "migrated tdl session from ${TRIM_PKGVAR}/tdl-data/data"
-        elif [ -f "${APP_DIR}/presets/tdl-data/data/default" ]; then
-            cp -f "${APP_DIR}/presets/tdl-data/data/default" "${TDL_DATA_DIR}/default" \
-                && log_msg "seeded tdl session from presets"
-        fi
+    # 登录态迁移到官方默认位置 ~/.tdl/data：
+    # 目标不存在时，取旧位置 var/tdl-data/data（0.3.1 及以前）。
+    # 注意：包内不携带任何登录态，首次使用须在应用内登录。
+    if [ ! -f "${TDL_DATA_DIR}/default" ] && [ -f "${TRIM_PKGVAR}/tdl-data/data/default" ]; then
+        cp -f "${TRIM_PKGVAR}/tdl-data/data/default" "${TDL_DATA_DIR}/default" \
+            && log_msg "migrated tdl session from ${TRIM_PKGVAR}/tdl-data/data"
     fi
 
     # 包内文件权限被打包工具归一为 666，解包后需补执行位，

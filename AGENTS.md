@@ -15,7 +15,7 @@
 | MariaDB | `192.168.1.2:3306`，root / gkc2020..，SIT 用 `test` 库，生产用 `td_download` 库 |
 | SIT 代理 | `192.168.1.2:20172`（本机开发代理 `127.0.0.1:10100`） |
 | fnpack 打包工具 | `I:/my_project/fn_fpk_packages/fnpack.exe`（v1.2.3） |
-| 预置 Telegram 登录态 | `fpk/tg-download/app/presets/tdl-data`（来自本机 `I:/my_project/tg-download/.tdl`） |
+| 本地 Telegram 登录态 | `I:/my_project/tg-download/.tdl`（**禁止入库**，也不得打进 fpk） |
 
 ## 必须遵守的约定
 

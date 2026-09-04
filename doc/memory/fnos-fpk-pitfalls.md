@@ -64,7 +64,7 @@ grep -o 'GET /app-center-static/[^ ]*<pkg>[^ ]* HTTP/1.1" [0-9]* [0-9]*' /usr/tr
 - 官方 tdl 布局：`<数据目录>/data/<namespace>` 为 bolt 文件，bucket=namespace，key=`session`。默认数据目录 `~/.tdl`。
 - 本项目 server 的 `OpenBolt(dir, ns)` 直接打开 `<dir>/<ns>`，因此 **`-tdl-data` 必须传到 `.../tdl-data/data` 这一层**（不是 tdl-data 根）。
 - 传错层级时 server 会在根下自建一个空的 `<ns>` 文件，HasSession 永远 false → 界面一直"未登录"，预置登录态完全失效。
-- 判断依据：`ls -la` 对比——session 所在的 `default` 文件应为 131072B（presets 原始大小），自建空库只有 32KB 且 mtime 是请求时刻。
+- 判断依据：`ls -la` 对比——登录成功的 `default` 文件约 128–131KB，自建空库只有 32KB 且 mtime 是请求时刻。
 - 设置页"认证信息保存在 下载路径/.tdl"曾是前端写死的误导文案（0.3.1 已改为后端返回真实 tdlDataDir）。
 - `Me()`（gotd client.Auth().Status）需要连 Telegram，走 settings 里配置的代理；HasSession 只读本地 bolt 不需要网络。
 
@@ -73,7 +73,7 @@ grep -o 'GET /app-center-static/[^ ]*<pkg>[^ ]* HTTP/1.1" [0-9]* [0-9]*' /usr/tr
 - fnOS 应用没有 HOME 环境变量；fnOS 注入 **TRIM_PKGHOME=/vol1/@apphome/<pkg>**（trim_app_center 注入表实测确认，二进制内 `TRIM_APPDESTTRIM_PKGHOMETRIM_PKGMETA` 连串）。
 - 登录态定版路径：`/vol1/@apphome/tg-download/.tdl/data/default`（官方 tdl 布局 `<数据目录>/data/<ns>`）。
 - cmd/main 写法：`TDL_DATA_DIR="${TRIM_PKGHOME:-/vol1/@apphome/${TRIM_APPNAME:-tg-download}}/.tdl/data"`——不依赖 HOME，fnOS 启动/SSH 手动启动结果一致。
-- start 时自动迁移：目标无 default 时，依次尝试旧位置 `${TRIM_PKGVAR}/tdl-data/data/default`、包内 `presets/tdl-data/data/default`。
+- start 时自动迁移：目标无 default 时，从旧位置 `${TRIM_PKGVAR}/tdl-data/data/default` 迁移（0.3.1 及以前）；**不再从包内 presets 注入登录态**（会带上开发者账号）。
 - 排查手段：`tr '\0' '\n' < /proc/<pid>/environ` 看真实环境；SSH 手动重启的进程环境不可作准（会继承 SSH shell 的 HOME=/root）。
 - `/root/.tdl` 曾短暂使用后废弃；注意 tdl CLI 默认 storage path=/root/.tdl/data，若 SSH 手动跑 tdl 命令需显式 `-d /vol1/@apphome/tg-download/.tdl`。
 

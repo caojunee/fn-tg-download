@@ -19,12 +19,6 @@ sq_escape() {
 
 mkdir -p "${PKG_VAR}/data" "${PKG_VAR}/tdl-data" "${PKG_ETC}"
 
-# 1) 预置 tdl 登录态（包内 app/presets/tdl-data → var/tdl-data，已存在则跳过）
-if [ ! -f "${PKG_VAR}/tdl-data/data.kv" ] && [ -f "${APP_DEST}/presets/tdl-data/data.kv" ]; then
-    cp -f "${APP_DEST}/presets/tdl-data/data.kv" "${PKG_VAR}/tdl-data/data.kv"
-    [ -d "${APP_DEST}/presets/tdl-data/data" ] && cp -r "${APP_DEST}/presets/tdl-data/data" "${PKG_VAR}/tdl-data/"
-    log_msg "preset tdl session installed"
-fi
 
 # 2) 由向导字段拼装 DSN，与启动端口一起写入 etc/env
 DB_DSN=""

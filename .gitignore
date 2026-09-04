@@ -10,3 +10,8 @@ fpk/tg-download/app/server
 fpk/tg-download/app/web/
 *.fpk
 web/.playwright-cli/
+
+# 预置/本地 Telegram 登录态（含真实 session，禁止入库）
+fpk/*/app/presets/
+.tdl/
+*.tdl/data/

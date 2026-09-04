@@ -63,9 +63,11 @@ fn-tg-download/
     ├── bin/              # tdl
     ├── web/              # 前端构建产物（index.html + assets/）
     ├── ui/config         # fnOS 桌面入口定义（iframe 类型，硬编码端口）
-    ├── ui/images/        # 图标（icon-64/256.png，fnOS 按 {0} 模板取尺寸）
-    └── presets/tdl-data  # 预置登录态（安装时复制到 var，存在则跳过）
+    └── ui/images/        # 图标（icon-64/256.png，fnOS 按 {0} 模板取尺寸）
 ```
+
+> 包内**不携带任何登录态**，首次使用需在应用内完成 Telegram 登录
+> （登录态落在 `/vol3/@apphome/tg-download/.tdl/data/default`，卸载升级会保留）。
 
 ## 本地开发
 
@@ -82,7 +84,7 @@ go build -o server-local.exe .
 # 带 DB：-db-dsn "user:pass@tcp(host:3306)/db?charset=utf8mb4&loc=Local"
 ```
 
-登录态本地开发可复用 `fpk/tg-download/app/presets/tdl-data` 目录（即 tdl 数据目录）。
+登录态本地开发可复用本机的 `I:/my_project/tg-download/.tdl` 目录（即 tdl 数据目录，注意不要提交进仓库）。
 
 ## 构建 fpk
 
