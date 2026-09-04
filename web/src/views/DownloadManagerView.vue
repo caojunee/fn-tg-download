@@ -4,10 +4,12 @@ import { showConfirmDialog, showSuccessToast } from 'vant'
 import AppIcon from '@/components/AppIcon.vue'
 import TaskItem from '@/components/TaskItem.vue'
 import { useDownloadStore } from '@/stores/download'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { formatSpeed } from '@/utils/format'
 
 const download = useDownloadStore()
 const tab = ref(0)
+const isMobile = useIsMobile()
 
 const stats = computed(() => [
   {
@@ -47,10 +49,6 @@ async function onRetry(id: string) {
 }
 const cancelShow = ref(false)
 const cancelTarget = ref('')
-const cancelActions = [
-  { name: '保留分片并取消（可断点续传）' },
-  { name: '删除分片并取消', color: '#ee0a24' },
-]
 function onCancel(id: string) {
   cancelTarget.value = id
   cancelShow.value = true
@@ -61,6 +59,14 @@ async function doCancel(deletePartial: boolean) {
   showSuccessToast(deletePartial ? '任务已取消，分片已删除' : '任务已取消，分片已保留')
 }
 async function onRemove(id: string) {
+  try {
+    await showConfirmDialog({
+      title: '删除记录',
+      message: '仅删除任务记录，不会删除磁盘上已下载的文件。确定删除吗？',
+    })
+  } catch {
+    return
+  }
   await download.removeHistory([id])
 }
 async function onClearHistory() {
@@ -165,18 +171,82 @@ async function onResumeAll() {
       </van-tabs>
     </div>
 
-    <van-action-sheet
+    <van-popup
       v-model:show="cancelShow"
-      :actions="cancelActions"
-      cancel-text="返回"
-      close-on-click-action
-      description="选择取消方式：保留分片下次可续传，删除分片则从零重新下载"
-      @select="(_a: unknown, index: number) => doCancel(index === 1)"
-    />
+      :position="isMobile ? 'bottom' : 'center'"
+      round
+      :style="isMobile ? { maxHeight: '70%' } : { width: '380px' }"
+    >
+      <div class="cancel-pop" :class="{ 'is-desktop': !isMobile }">
+        <div class="cancel-pop__desc">
+          选择取消方式：保留分片下次可续传，删除分片则从零重新下载
+        </div>
+        <button class="cancel-pop__opt" @click="doCancel(false)">
+          保留分片并取消<span class="cancel-pop__hint">可断点续传</span>
+        </button>
+        <button class="cancel-pop__opt is-danger" @click="doCancel(true)">
+          删除分片并取消<span class="cancel-pop__hint">从零重新下载</span>
+        </button>
+        <button class="cancel-pop__opt is-plain" @click="cancelShow = false">返回</button>
+      </div>
+    </van-popup>
   </div>
 </template>
 
 <style scoped lang="scss">
+.cancel-pop {
+  padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+
+  &__desc {
+    padding: 4px 8px 14px;
+    font-size: 13px;
+    color: var(--van-text-color-2);
+    line-height: 1.5;
+  }
+
+  &__opt {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 13px 14px;
+    border: none;
+    border-radius: 10px;
+    background: var(--van-active-color, #f2f3f5);
+    color: var(--van-text-color);
+    font-size: 15px;
+    cursor: pointer;
+    text-align: left;
+
+    & + & {
+      margin-top: 10px;
+    }
+
+    &.is-danger {
+      color: var(--van-danger-color, #ee0a24);
+    }
+
+    &.is-plain {
+      background: transparent;
+      color: var(--van-text-color-2);
+      justify-content: center;
+    }
+  }
+
+  &__hint {
+    font-size: 12px;
+    color: var(--van-text-color-3);
+  }
+
+  &.is-desktop {
+    padding-bottom: 16px;
+
+    .cancel-pop__opt:hover {
+      filter: brightness(0.97);
+    }
+  }
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

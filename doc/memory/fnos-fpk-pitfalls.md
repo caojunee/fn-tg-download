@@ -76,3 +76,24 @@ grep -o 'GET /app-center-static/[^ ]*<pkg>[^ ]* HTTP/1.1" [0-9]* [0-9]*' /usr/tr
 - start 时自动迁移：目标无 default 时，依次尝试旧位置 `${TRIM_PKGVAR}/tdl-data/data/default`、包内 `presets/tdl-data/data/default`。
 - 排查手段：`tr '\0' '\n' < /proc/<pid>/environ` 看真实环境；SSH 手动重启的进程环境不可作准（会继承 SSH shell 的 HOME=/root）。
 - `/root/.tdl` 曾短暂使用后废弃；注意 tdl CLI 默认 storage path=/root/.tdl/data，若 SSH 手动跑 tdl 命令需显式 `-d /vol1/@apphome/tg-download/.tdl`。
+
+## 11. tdl tracker 行真实格式(0.3.4 定版,SIT 实测抓取)
+
+- **tdl 进度 tracker 行不含文件名**!真实格式(SIT 自编译 0.20.x,http 代理):
+  `Telegram News(1005640892):193~  ...  50.5% [####....] [1.00 MB in 7s; 139.40 KB/s]`
+  显示名为 `{聊天标题}({对话ID}):{消息ID}~`,完成后百分比变为 `done!`。
+- 帧结构:CPU/Memory 统计行(无标记)→ 每个 tracker 行 → 进度条行(`[####....]`,无标记)。
+ 此前按"行首 token 是文件名"解析完全错误(剥 ANSI 后首 token 是标题首词,如 `Telegram`),
+ 被 `^\d+_\d+_` 过滤后 filePerc 永远为空 → 文件追踪与删除分片双双失效(0.3.3 的"验证成功"
+ 实为磁盘扫描兜底的假象)。
+- 0.3.4 方案:ParseProgressLine 用 `\((\d+)\):(\d+)~` 提取对话/消息 ID(百分比只在标记之后找,
+ 避免聊天标题里的数字误匹配;`done!` 记 100%);真实文件名由 watchTask 每秒按
+ `{对话ID}_{消息ID}_*` 前缀 glob 下载目录解析(td l 默认模板 `{对话ID}_{消息ID}_{文件名}`,
+ 下载中带 `.tmp` 后缀,完成时 tdl 自动改名)。
+- 删除分片同样按 `{对话ID}_{消息ID}_*.tmp` glob 前缀匹配——文件名含空格/emoji/括号都不影响,
+ 且不会误删同目录其他任务的分片。
+- 诊断手段:`timeout 40 tdl -n default --storage 'type=bolt,path=...' --proxy http://... dl ... > log 2>&1`
+ 后 `cat -v` 看 ANSI 原始帧。注意:代理配置若是 `http://` 用 socks5 测会"挂起 0 输出"
+ (端口通但握手超时),先 `curl --proxy <同协议>` 验证连通性。
+- 纯文本消息(无媒体)tdl exit 0 空跑,任务会显示 completed 但 0 文件——边界情况,后续可在
+ probe 阶段拦截。

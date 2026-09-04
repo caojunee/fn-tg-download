@@ -7,37 +7,53 @@ import (
 )
 
 // tdl 的进度条由 go-pretty progress 渲染到 stdout，每 100ms 一帧，
-// 帧内每个 tracker 一行，形如（含 ANSI 色码，非 TTY 下仍有 \r 分隔）：
+// 帧内每个 tracker 一行，形如（SIT 实测 0.20.x，非 TTY 下以 \n + \r 混合分隔）：
 //
-//	<文件名>  [tracker]  32.0%  [1.1 MB/s]  [00:12]  [00:30]
+//	CPU: 0.00% Memory: 35.70 MB Goroutines: 22              ← 系统统计行（无标记，忽略）
+//	Telegram News(1005640892):193~  ...  50.5% [####....] [1.00 MB in 7s; 139 KB/s]
+//	[####.....................] [7s; 139.40 KB/s]           ← 进度条行（无标记，忽略）
 //
-// 该解析器刻意写得宽容：仅提取百分比与速率，作为目录大小监控的兜底。
+// tracker 行的显示名是「{聊天标题}({对话ID}):{消息ID}~」，不含文件名；
+// 磁盘文件名遵循模板 {对话ID}_{消息ID}_{文件名}，二者通过 ID 关联。
 var (
-	ansiRe      = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-	percentRe   = regexp.MustCompile(`(\d{1,3}(?:\.\d+)?)\s*%`)
-	speedRe     = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*([KMGT]?i?B)/s`)
-	overallHint = []string{"overall", "(total)", "total"}
+	ansiRe   = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+	// trackerRe 从 tracker 行提取 (对话ID):(消息ID)~ 标记
+	trackerRe = regexp.MustCompile(`\((\d+)\):(\d+)~`)
+	percentRe = regexp.MustCompile(`(\d{1,3}(?:\.\d+)?)\s*%`)
+	speedRe   = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*([KMGT]?i?B)/s`)
 )
 
 // ProgressSample 从一行进度输出中提取的信息。
 type ProgressSample struct {
-	Percent float64 // 0-100
-	Speed   float64 // 字节/秒
-	Overall bool    // 是否为总览行
-	Name    string  // 进度条对应的文件名（非总览行时为行首 token，可能因文件名含空格被截断）
+	Percent  float64 // 0-100（done! 视为 100）
+	Speed    float64 // 字节/秒
+	DialogID string // tracker 对应的对话 ID
+	MsgID    string // tracker 对应的消息 ID
 }
 
-// ParseProgressLine 解析一行 tdl 进度输出，解析失败返回 ok=false。
+// ParseProgressLine 解析一行 tdl 进度输出。
+// 仅 tracker 行（含 (对话ID):(消息ID)~ 标记）返回 ok=true，
+// CPU/内存统计行、进度条行、普通日志行均返回 ok=false。
 func ParseProgressLine(raw string) (ProgressSample, bool) {
 	line := ansiRe.ReplaceAllString(raw, "")
 	if strings.TrimSpace(line) == "" {
 		return ProgressSample{}, false
 	}
-	lower := strings.ToLower(line)
-	s := ProgressSample{Overall: containsAny(lower, overallHint)}
 
-	if m := percentRe.FindStringSubmatch(line); m != nil {
-		p, err := strconv.ParseFloat(m[1], 64)
+	m := trackerRe.FindStringSubmatchIndex(line)
+	if m == nil {
+		return ProgressSample{}, false
+	}
+	s := ProgressSample{
+		DialogID: line[m[2]:m[3]],
+		MsgID:    line[m[4]:m[5]],
+	}
+	rest := line[m[1]:] // 标记之后的部分，百分比/速率只在其中找，避免标题数字误匹配
+
+	if strings.Contains(rest, "done!") {
+		s.Percent = 100
+	} else if pm := percentRe.FindStringSubmatch(rest); pm != nil {
+		p, err := strconv.ParseFloat(pm[1], 64)
 		if err != nil || p < 0 || p > 100 {
 			return ProgressSample{}, false
 		}
@@ -46,29 +62,13 @@ func ParseProgressLine(raw string) (ProgressSample, bool) {
 		return ProgressSample{}, false
 	}
 
-	if m := speedRe.FindStringSubmatch(line); m != nil {
-		v, err := strconv.ParseFloat(m[1], 64)
+	if sm := speedRe.FindStringSubmatch(rest); sm != nil {
+		v, err := strconv.ParseFloat(sm[1], 64)
 		if err == nil {
-			s.Speed = v * unitMultiplier(m[2])
-		}
-	}
-	if !s.Overall {
-		// 行首 token 即文件名（<文件名> [tracker] 32.0% [1.1 MB/s] ...）；
-		// 文件名含空格时会被截断，但前缀 {对话ID}_{消息ID}_ 仍保持唯一性
-		if fields := strings.Fields(line); len(fields) > 0 {
-			s.Name = strings.Trim(fields[0], "[]")
+			s.Speed = v * unitMultiplier(sm[2])
 		}
 	}
 	return s, true
-}
-
-func containsAny(s string, subs []string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
 }
 
 func unitMultiplier(unit string) float64 {

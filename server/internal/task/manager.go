@@ -47,8 +47,9 @@ type runner struct {
 	percent float64 // stdout 解析到的百分比（totalSize 未知时的兜底）
 	speed   float64 // stdout 解析到的瞬时速率（字节/秒）
 
-	fm          sync.Mutex         // 保护 filePerc（onLine 与 watchTask 不同 goroutine）
-	filePerc    map[string]float64 // stdout 追踪到的真实文件 → 最新百分比
+	fm          sync.Mutex         // 保护 filePerc/fileNames（onLine 与 watchTask 不同 goroutine）
+	filePerc    map[string]float64 // stdout 追踪到的下载单元 → 最新百分比，键为 "对话ID_消息ID"
+	fileNames   map[string]string  // 已解析到的真实磁盘文件名，键同上（可能滞后一拍）
 }
 
 func NewManager(opts Options) *Manager {
@@ -316,32 +317,60 @@ func (m *Manager) Cancel(id string, deletePartial bool) error {
 		<-r.stopped
 		if deletePartial {
 			r.fm.Lock()
-			names := make([]string, 0, len(r.filePerc))
-			for n := range r.filePerc {
-				names = append(names, n)
+			keys := make([]string, 0, len(r.filePerc))
+			for k := range r.filePerc {
+				keys = append(keys, k)
 			}
 			r.fm.Unlock()
-			removePartials(t.SavePath, names)
+			removePartials(t.SavePath, keys)
 		}
 	}
 	return nil
 }
 
 // removePartials 只删除 .tmp 分片，绝不碰已完成的真实文件。
-// names 为 stdout 追踪到的文件名（可能被空格截断，前缀精确名仍可命中）。
-func removePartials(dir string, names []string) {
-	if dir == "" || len(names) == 0 {
+// keys 为 stdout 追踪到的下载单元（"对话ID_消息ID"），磁盘分片命名遵循
+// tdl 默认模板 {对话ID}_{消息ID}_{文件名}.tmp，按前缀匹配可完整命中含
+// 空格/表情的文件名，且不会误删同目录其他任务的分片。
+func removePartials(dir string, keys []string) {
+	if dir == "" || len(keys) == 0 {
 		return
 	}
-	for _, n := range names {
-		if n == "" {
+	for _, k := range keys {
+		if k == "" {
 			continue
 		}
-		_ = os.Remove(filepath.Join(dir, n+".tmp"))
-		if strings.HasSuffix(n, ".tmp") {
-			_ = os.Remove(filepath.Join(dir, n))
+		matches, err := filepath.Glob(filepath.Join(dir, k+"_*.tmp"))
+		if err != nil {
+			continue
+		}
+		for _, f := range matches {
+			_ = os.Remove(f)
 		}
 	}
+}
+
+// resolveFileNames 把 stdout 追踪到的下载单元键（"对话ID_消息ID"）解析为
+// 磁盘上的真实文件名（{对话ID}_{消息ID}_{文件名}，完成后无 .tmp 后缀）。
+// 文件尚未创建或已被 tdl 重命名时重新解析。需持有 r.fm。
+func resolveFileNames(savePath string, r *runner) map[string]string {
+	if r.fileNames == nil {
+		r.fileNames = make(map[string]string)
+	}
+	for key := range r.filePerc {
+		if n, ok := r.fileNames[key]; ok && n != "" {
+			if _, err := os.Stat(filepath.Join(savePath, n)); err == nil {
+				continue // 已解析且文件仍在
+			}
+		}
+		matches, err := filepath.Glob(filepath.Join(savePath, key+"_*"))
+		if err != nil || len(matches) == 0 {
+			continue // 文件还没落盘，下一秒 tick 重试
+		}
+		sort.Strings(matches)
+		r.fileNames[key] = filepath.Base(matches[0])
+	}
+	return r.fileNames
 }
 
 // Retry 重新入队失败/取消/已完成的任务。
@@ -476,13 +505,14 @@ func (m *Manager) startLocked(task *Task) {
 			if s.Speed > r.speed {
 				r.speed = s.Speed
 			}
-			// 追踪真实文件名（私有频道/探测失败时，占位文件数与实际不符）
-			if s.Name != "" {
+			// 追踪下载单元（键 "对话ID_消息ID"）。tracker 行不含文件名，
+			// 真实文件名由 watchTask 按 {对话ID}_{消息ID}_ 前缀从磁盘解析
+			if s.DialogID != "" && s.MsgID != "" {
 				r.fm.Lock()
 				if r.filePerc == nil {
 					r.filePerc = make(map[string]float64)
 				}
-				r.filePerc[s.Name] = s.Percent
+				r.filePerc[s.DialogID+"_"+s.MsgID] = s.Percent
 				r.fm.Unlock()
 			}
 		}
@@ -542,7 +572,15 @@ func (m *Manager) watchTask(task *Task, r *runner) {
 				// 用 stdout 追踪到的真实文件列表修正占位数据
 				r.fm.Lock()
 				if len(r.filePerc) > 0 {
-					syncFilesLocked(task, r.filePerc)
+					percs := make(map[string]float64, len(r.filePerc))
+					for key, p := range r.filePerc {
+						if n, ok := resolveFileNames(task.SavePath, r)[key]; ok && n != "" {
+							percs[n] = p
+						}
+					}
+					if len(percs) > 0 {
+						syncFilesLocked(task, percs)
+					}
 				}
 				r.fm.Unlock()
 				switch {
