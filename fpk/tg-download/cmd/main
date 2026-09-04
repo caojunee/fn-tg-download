@@ -61,6 +61,10 @@ start_process() {
         fi
     fi
 
+    # 包内文件权限被打包工具归一为 666，解包后需补执行位，
+    # 否则直接启动会 Permission denied（scp 覆盖二进制后同理）
+    chmod 755 "${APP_DIR}/server" "${APP_DIR}/bin/tdl" 2>/dev/null
+
     # 端口占用预检：被占用则报错退出，提示改端口
     if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
         exec 3>&- 3<&- 2>/dev/null
