@@ -1,5 +1,16 @@
 # 版本记录
 
+## v0.3.5（2026-09-04）
+
+- **修复"删除分片并取消"实际不删分片**（真凶终于抓到）：tdl v0.20.4 的 tracker 消息实际是「`{标题}({对话ID}):{消息ID} -> {目标路径}`」（`app/dl/progress.go` 的 `elemString`，源码+SIT 抓原始 stdout 双确认），路径过长被 go-pretty 截断成 `~` 结尾。而 0.3.4 的解析正则 `\((\d+)\):(\d+)~` 要求 `~` 紧跟消息 ID，**永远匹配不上** → `filePerc` 恒为空 → 取消时没有 keys 可删、文件列表也一直是占位（组合下载 0/1 的残余根因）。正则改为 `\((\d+)\):(\d+)(?:\s*->\s*\S+)?`，旧格式向后兼容；新增 `progress_test.go` 用实测行做回归用例。
+- SIT E2E 复现路径：建任务 → 分片落盘（`4434014100_2_*.tmp`）→ cancel deletePartial=true → API ok 但分片仍在；同时 API progress 恒 0、文件名恒占位，即解析从未生效。
+
+## v0.3.2 ~ v0.3.4（2026-09-04，补记）
+
+- v0.3.2：tdl-data 迁官方默认位置 `TRIM_PKGHOME/.tdl/data`（用户指正应用 ~ 是 /vol1/@apphome）。
+- v0.3.3：取消任务改二选一（仅取消 / 删除分片并取消，van-popup 居中 380px）；保存路径等设置项跟随 store。
+- v0.3.4：重写进度解析提取 `(对话ID):(消息ID)` + 磁盘 glob 真实文件名（当时误判 tracker 行格式，实际未生效，见 v0.3.5）。
+
 ## v0.3.1（2026-09-04）
 
 - **修复登录态始终"未登录"**：`cmd/main` 的 `-tdl-data` 少了 `/data` 后缀。官方 tdl 布局为 `<数据目录>/data/<namespace>`（session 在 `data/default`），此前 server 在 `tdl-data/` 根下自建空 bolt 导致预置登录态永远读不到。SIT 重启后 `auth/me` 恢复正常。

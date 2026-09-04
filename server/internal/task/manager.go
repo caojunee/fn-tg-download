@@ -322,32 +322,75 @@ func (m *Manager) Cancel(id string, deletePartial bool) error {
 				keys = append(keys, k)
 			}
 			r.fm.Unlock()
-			removePartials(t.SavePath, keys)
+			removePartials(t.SavePath, keys, m.otherRunningPrefixes(id))
 		}
 	}
 	return nil
 }
 
+// otherRunningPrefixes 收集除 exclude 外所有运行中任务追踪到的下载单元前缀
+// （"对话ID_消息ID"），删除分片时用于保护其他并发任务的断点数据。
+func (m *Manager) otherRunningPrefixes(exclude string) map[string]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prot := make(map[string]bool)
+	for id, r := range m.running {
+		if id == exclude {
+			continue
+		}
+		r.fm.Lock()
+		for k := range r.filePerc {
+			prot[k] = true
+		}
+		r.fm.Unlock()
+	}
+	return prot
+}
+
 // removePartials 只删除 .tmp 分片，绝不碰已完成的真实文件。
-// keys 为 stdout 追踪到的下载单元（"对话ID_消息ID"），磁盘分片命名遵循
-// tdl 默认模板 {对话ID}_{消息ID}_{文件名}.tmp，按前缀匹配可完整命中含
-// 空格/表情的文件名，且不会误删同目录其他任务的分片。
-func removePartials(dir string, keys []string) {
-	if dir == "" || len(keys) == 0 {
+// 删除规则：文件名前缀（"对话ID_消息ID"）属于本任务追踪到的 keys，或
+// 不属于任何其他运行中任务追踪到的前缀（保护并发任务的断点）。
+// 后一条件覆盖排队未启动的分片——它们从未出现在 tracker 输出里，
+// 但 0 字节/未开始的分片删除无实际损失（重试会重建）。
+func removePartials(dir string, keys []string, protected map[string]bool) {
+	if dir == "" {
 		return
 	}
+	keySet := make(map[string]bool, len(keys))
 	for _, k := range keys {
-		if k == "" {
-			continue
-		}
-		matches, err := filepath.Glob(filepath.Join(dir, k+"_*.tmp"))
-		if err != nil {
-			continue
-		}
-		for _, f := range matches {
-			_ = os.Remove(f)
+		if k != "" {
+			keySet[k] = true
 		}
 	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		prefix := partialPrefix(strings.TrimSuffix(name, ".tmp"))
+		if prefix == "" {
+			continue
+		}
+		if keySet[prefix] || !protected[prefix] {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+	}
+}
+
+// partialPrefix 从分片文件名（去 .tmp 后）提取 "对话ID_消息ID" 前缀，
+// 即 tdl 默认模板 {对话ID}_{消息ID}_{文件名} 的前两段；不匹配返回空。
+var partialPrefixRe = regexp.MustCompile(`^(\d+)_(\d+)_`)
+
+func partialPrefix(base string) string {
+	m := partialPrefixRe.FindString(base)
+	return strings.TrimSuffix(m, "_")
 }
 
 // resolveFileNames 把 stdout 追踪到的下载单元键（"对话ID_消息ID"）解析为

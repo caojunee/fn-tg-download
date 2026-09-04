@@ -7,18 +7,21 @@ import (
 )
 
 // tdl 的进度条由 go-pretty progress 渲染到 stdout，每 100ms 一帧，
-// 帧内每个 tracker 一行，形如（SIT 实测 0.20.x，非 TTY 下以 \n + \r 混合分隔）：
+// 帧内每个 tracker 一行，形如（tdl v0.20.4 源码 elemString + SIT 实测）：
 //
 //	CPU: 0.00% Memory: 35.70 MB Goroutines: 22              ← 系统统计行（无标记，忽略）
-//	Telegram News(1005640892):193~  ...  50.5% [####....] [1.00 MB in 7s; 139 KB/s]
+//	test(4434014100):2 -> /tmp/e2~ ...  1.3% [........] [1.00 MB in 1s; 954.48 KB/s]
 //	[####.....................] [7s; 139.40 KB/s]           ← 进度条行（无标记，忽略）
 //
-// tracker 行的显示名是「{聊天标题}({对话ID}):{消息ID}~」，不含文件名；
-// 磁盘文件名遵循模板 {对话ID}_{消息ID}_{文件名}，二者通过 ID 关联。
+// tracker 消息由 tdl 构造为「{聊天标题}({对话ID}):{消息ID} -> {目标路径}」，
+// 目标路径过长时被 go-pretty 截断并以 ~ 结尾（完成/失败时中间的 ... 变为 done!/failed!）；
+// 磁盘文件名遵循模板 {对话ID}_{消息ID}_{文件名}.tmp，二者通过 ID 关联。
 var (
-	ansiRe   = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-	// trackerRe 从 tracker 行提取 (对话ID):(消息ID)~ 标记
-	trackerRe = regexp.MustCompile(`\((\d+)\):(\d+)~`)
+	ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+	// trackerRe 从 tracker 行提取 (对话ID):(消息ID) 标记。
+	// 消息 ID 后可能跟「 -> 路径」（可能被截断、含空格，\S+ 只吃路径首段即可，
+	// 百分比/速率在剩余部分查找，路径里几乎不会出现 % 或 MB/s 字样）。
+	trackerRe = regexp.MustCompile(`\((\d+)\):(\d+)(?:\s*->\s*\S+)?`)
 	percentRe = regexp.MustCompile(`(\d{1,3}(?:\.\d+)?)\s*%`)
 	speedRe   = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*([KMGT]?i?B)/s`)
 )
@@ -32,7 +35,7 @@ type ProgressSample struct {
 }
 
 // ParseProgressLine 解析一行 tdl 进度输出。
-// 仅 tracker 行（含 (对话ID):(消息ID)~ 标记）返回 ok=true，
+// 仅 tracker 行（含 (对话ID):(消息ID) 标记）返回 ok=true，
 // CPU/内存统计行、进度条行、普通日志行均返回 ok=false。
 func ParseProgressLine(raw string) (ProgressSample, bool) {
 	line := ansiRe.ReplaceAllString(raw, "")
