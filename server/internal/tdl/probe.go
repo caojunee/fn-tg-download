@@ -353,6 +353,45 @@ func channelHash(resolve *tg.ContactsResolvedPeer, id int64) int64 {
 	return 0
 }
 
+// DirNameForURL 返回该链接的下载子目录名（已 sanitize），实现
+// 「按频道名自动分目录」：优先用探测到的频道标题；探测失败时从
+// 链接本身回退——私有频道 c/<id> 用「频道 <id>」，公开频道用
+// username。链接不是 t.me 格式或 sanitize 后为空则返回空串
+// （调用方应退回不分子目录的行为）。
+func DirNameForURL(raw, chatTitle string) string {
+	if s := SanitizeDirName(chatTitle); s != "" {
+		return s
+	}
+	raw = strings.TrimSpace(raw)
+	if m := tmeRe.FindStringSubmatch(raw); m != nil {
+		if m[2] != "" { // c/<internal_id>
+			return SanitizeDirName(fmt.Sprintf("频道 %s", m[2]))
+		}
+		return SanitizeDirName(m[3])
+	}
+	return ""
+}
+
+// dirNameSanitizeRe 命中各文件系统共有的非法字符与控制字符。
+var dirNameSanitizeRe = regexp.MustCompile(`[\\/:*?"<>|\x00-\x1f]`)
+
+// SanitizeDirName 将频道标题转为安全的目录名：非法字符替换为空格，
+// 去掉首尾空白与结尾的点（Windows 兼容），压缩连续空白，限长 80
+// 字符（按 rune 截断，避免中文标题被截出半个字）。处理结果为空则返回空串。
+func SanitizeDirName(name string) string {
+	s := dirNameSanitizeRe.ReplaceAllString(strings.TrimSpace(name), " ")
+	s = strings.Join(strings.Fields(s), " ")
+	s = strings.TrimRight(s, ". ")
+	if s == "" || s == ".." {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) > 80 {
+		s = string(runes[:80])
+	}
+	return s
+}
+
 func userHash(resolve *tg.ContactsResolvedPeer, id int64) int64 {
 	for _, u := range resolve.Users {
 		if user, ok := u.(*tg.User); ok && user.ID == id {

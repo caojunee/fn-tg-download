@@ -153,6 +153,12 @@ func (m *Manager) Create(in CreateInput) ([]Task, error) {
 		t.Name = pr.Title
 		t.Files = placeholderFiles(pr.FileCount, pr.TotalSize, pr.Title)
 	}
+	// 按频道名自动分子目录（与系统设置页文案一致）：
+	// <保存路径>/<频道名>。标题缺失时由 DirNameForURL 从链接回退
+	// （私有频道「频道 <id>」/ 公开频道 username），无法解析则不分子目录。
+	if sub := tdl.DirNameForURL(url, t.ChatTitle); sub != "" {
+		t.SavePath = filepath.Join(savePath, sub)
+	}
 	if t.Name == "" {
 		t.Name = url
 		t.Kind = "single"
