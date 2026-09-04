@@ -8,6 +8,8 @@
 - 修复 X-Skipped-Reasons 响应头在写响应体之后设置导致静默失效（Go Header 须在 WriteHeader 前设置）。
 - 修复多文件任务总进度提前 100%：stdout 百分比兜底取最大 tracker 值，首个单元完成即满——封顶 99，完成时置 100。
 - doc/memory/architecture-decisions.md 补「下载管线（0.4.x 定型）」章节。
+- 浏览器验收发现 web 构建产物停留在 v0.4.2：TS 报错（命名导入不存在的 service 导出）导致 build 失败而校验 grep 漏检。修复导入并重建，验收通过（版本/任务卡片/文件明细/移动端 tabbar）。
+- 完成回填补 DownloadedSize/TotalSize：秒完成或重试的任务 watchTask 来不及累计目录差分，完成后不再显示 "0 B / 0 B"。
 - 版本三处同步 0.4.4。
 
 ## v0.4.3（2026-09-04）

@@ -907,6 +907,18 @@ func (m *Manager) finishTask(task *Task, r *runner, exitErr error) {
 				task.DownloadedSize = task.TotalSize
 			}
 			fillFilesFinal(task, r)
+			// 文件大小合计回填已下载量：秒完成/重试的任务 watchTask 来不及
+			// 累计目录差分，避免完成后显示 "0 B / 0 B"
+			var sum int64
+			for _, f := range task.Files {
+				sum += f.Size
+			}
+			if sum > task.DownloadedSize {
+				task.DownloadedSize = sum
+			}
+			if task.TotalSize < sum {
+				task.TotalSize = sum
+			}
 			if len(task.Files) == 0 {
 				// 空跑兜底：tdl 正常退出但没下载到任何文件（纯文本消息、
 				// 全部被过滤等），标记失败并说明原因，避免误导性的

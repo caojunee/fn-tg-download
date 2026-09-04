@@ -1,6 +1,7 @@
 import type { ApiResult, CreateDownloadPayload, DownloadTask, MediaKind } from '@/types'
 import { showToast } from 'vant'
-import { USE_MOCK, httpGet, httpPost, service } from './request'
+import { USE_MOCK, httpGet, httpPost } from './request'
+import service from './request'
 
 /** 解析结果：探测链接是单条消息还是相册 / 组合消息 */
 export interface ProbeResult {
