@@ -597,10 +597,13 @@ func (m *Manager) startLocked(task *Task) {
 		URL:       task.URL,
 		SavePath:  task.SavePath,
 		Group:     task.Group,
-		Limit:     2,
-		Threads:   4,
-		Include:   nil,
-		Exclude:   nil,
+		// tdl 断点续传为「文件级」：已完成的文件续传时秒跳过，但下载到一半的
+		// 文件会被截断重下。单并发（-l 1）保证暂停/失败时最多只损失 1 个
+		// 文件的部分进度。
+		Limit:   1,
+		Threads: 4,
+		Include: nil,
+		Exclude: nil,
 	}
 
 	onLine := func(line string) {
