@@ -33,8 +33,8 @@ func TestDirNameForURL(t *testing.T) {
 		{"https://t.me/mylove4877/896", "my love", "my love"},
 		// 公开频道无标题 → username
 		{"https://t.me/baisi_cos/123", "", "baisi_cos"},
-		// 私有频道无标题 → 频道 <id>
-		{"https://t.me/c/4434014100/2", "", "频道 4434014100"},
+		// 私有频道无标题 → <id>
+		{"https://t.me/c/4434014100/2", "", "4434014100"},
 		// 标题含非法字符 → sanitize
 		{"https://t.me/x/1", `a/b:c`, "a b c"},
 		// 非 t.me 链接不分子目录

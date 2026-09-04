@@ -1,5 +1,5 @@
 appname=tg-download
-version=0.4.1
+version=0.4.2
 display_name=TG 下载器
 desc=基于 iyear/tdl 的 Telegram 下载工具，支持相册/组合消息下载、任务进度管理与 MariaDB 持久化。
 platform=x86

@@ -355,8 +355,8 @@ func channelHash(resolve *tg.ContactsResolvedPeer, id int64) int64 {
 
 // DirNameForURL 返回该链接的下载子目录名（已 sanitize），实现
 // 「按频道名自动分目录」：优先用探测到的频道标题；探测失败时从
-// 链接本身回退——私有频道 c/<id> 用「频道 <id>」，公开频道用
-// username。链接不是 t.me 格式或 sanitize 后为空则返回空串
+// 链接本身回退——私有频道 c/<id> 直接用 <id>，公开频道用 username。
+// 链接不是 t.me 格式或 sanitize 后为空则返回空串
 // （调用方应退回不分子目录的行为）。
 func DirNameForURL(raw, chatTitle string) string {
 	if s := SanitizeDirName(chatTitle); s != "" {
@@ -365,7 +365,7 @@ func DirNameForURL(raw, chatTitle string) string {
 	raw = strings.TrimSpace(raw)
 	if m := tmeRe.FindStringSubmatch(raw); m != nil {
 		if m[2] != "" { // c/<internal_id>
-			return SanitizeDirName(fmt.Sprintf("频道 %s", m[2]))
+			return SanitizeDirName(m[2])
 		}
 		return SanitizeDirName(m[3])
 	}

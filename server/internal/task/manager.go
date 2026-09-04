@@ -229,14 +229,8 @@ func syncFilesLocked(t *Task, percs map[string]float64) {
 
 	old := make(map[string]File, len(t.Files))
 	for _, f := range t.Files {
-		old[f.Name] = f
-	}
-	lookup := func(name string) (File, bool) {
-		if f, ok := old[name]; ok {
-			return f, true
-		}
-		f, ok := old[strings.TrimSuffix(name, ".tmp")]
-		return f, ok
+		// 键统一用最终名：旧条目可能是改名前带 .tmp 的名字
+		old[strings.TrimSuffix(f.Name, ".tmp")] = f
 	}
 
 	files := make([]File, 0, len(names))
@@ -244,9 +238,14 @@ func syncFilesLocked(t *Task, percs map[string]float64) {
 	for _, n := range names {
 		id := newID()
 		size := int64(0)
-		if of, ok := lookup(n); ok {
+		if of, ok := old[n]; ok {
 			id = of.ID // 保持 ID 稳定，避免前端列表抖动
 			size = of.Size
+		}
+		if size == 0 {
+			// 自愈：历史条目 size 丢失（或从未拿到）时从磁盘读，
+			// fileSize 兼容下载中带 .tmp 后缀的名字
+			size = fileSize(t.SavePath, n)
 		}
 		p := percs[n]
 		st := StatusDownloading
@@ -256,16 +255,20 @@ func syncFilesLocked(t *Task, percs map[string]float64) {
 		files = append(files, File{ID: id, Name: n, Size: size, Status: st, Progress: p})
 		seen[n] = true
 	}
-	// 旧列表里未被追踪的真实文件条目（如整频道任务排队中的）保留
+	// 旧列表里未被追踪的真实文件条目（如整频道任务排队中的）保留。
+	// 名字统一去 .tmp 后缀：tdl 完成时会改名，旧条目名可能还带 .tmp，
+	// 与新列表的最终名是同一文件，不去重会重复出现（暂停恢复后 2/5 的根因）
 	for _, f := range t.Files {
-		if seen[f.Name] || !fileRe.MatchString(f.Name) {
+		name := strings.TrimSuffix(f.Name, ".tmp")
+		if seen[name] || !fileRe.MatchString(name) {
 			continue
 		}
 		st := f.Status
 		if st == StatusDownloading {
 			st = StatusPaused
 		}
-		files = append(files, File{ID: f.ID, Name: f.Name, Size: f.Size, Status: st, Progress: f.Progress})
+		files = append(files, File{ID: f.ID, Name: name, Size: f.Size, Status: st, Progress: f.Progress})
+		seen[name] = true
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 	t.Files = files
@@ -439,7 +442,9 @@ func resolveFileNames(savePath string, r *runner) map[string]string {
 			continue // 文件还没落盘，下一秒 tick 重试
 		}
 		sort.Strings(matches)
-		r.fileNames[key] = filepath.Base(matches[0])
+		// tdl 下载中文件名带 .tmp 后缀，完成后自动改名；列表全程
+		// 统一用最终名（去掉 .tmp），避免改名前后同一文件出现两条
+		r.fileNames[key] = strings.TrimSuffix(filepath.Base(matches[0]), ".tmp")
 	}
 	return r.fileNames
 }
@@ -889,8 +894,8 @@ func trimErr(err error) string {
 func fillFilesFinal(t *Task, r *runner) {
 	r.fm.Lock()
 	percs := make(map[string]float64, len(r.filePerc))
-	for n, p := range r.filePerc {
-		if fileRe.MatchString(n) {
+	for key, p := range r.filePerc {
+		if n, ok := resolveFileNames(t.SavePath, r)[key]; ok && n != "" {
 			percs[n] = p
 		}
 	}
@@ -910,6 +915,29 @@ func fillFilesFinal(t *Task, r *runner) {
 				Downloaded: size, Progress: 100, Status: StatusCompleted,
 			})
 		}
+		// 恢复任务时 tdl 会跳过之前已完成、大小一致的文件（无 tracker
+		// 行），percs 只含本次运行的文件；把旧列表中未被覆盖的真实文件
+		// 条目并入，避免完成后列表只剩本次下载的部分
+		seen := make(map[string]bool, len(files))
+		for _, f := range files {
+			seen[f.Name] = true
+		}
+		for _, f := range t.Files {
+			name := strings.TrimSuffix(f.Name, ".tmp")
+			if seen[name] || !fileRe.MatchString(name) {
+				continue
+			}
+			size := f.Size
+			if size == 0 {
+				size = fileSize(t.SavePath, name)
+			}
+			files = append(files, File{
+				ID: f.ID, Name: name, Size: size,
+				Downloaded: size, Progress: 100, Status: StatusCompleted,
+			})
+			seen[name] = true
+		}
+		sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 		t.Files = files
 		return
 	}
