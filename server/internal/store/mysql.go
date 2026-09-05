@@ -165,20 +165,27 @@ func (s *mysqlStore) Load() ([]*task.Task, error) {
 	var out []*task.Task
 	for rows.Next() {
 		var (
-			t       task.Task
-			status  string
-			group   int
-			errStr  sql.NullString
-			filesJS sql.NullString
+			t        task.Task
+			status   string
+			group    int
+			errStr   sql.NullString
+			filesJS  sql.NullString
+			peerID   sql.NullInt64
+			selected sql.NullString
 		)
 		if err := rows.Scan(&t.ID, &t.Name, &t.URL, &t.ChatTitle, &t.MessageID, &t.Kind,
 			&group, &t.TotalSize, &t.DownloadedSize, &t.Speed, &t.Progress, &status,
-			&t.SavePath, &t.CreatedAt, &t.FinishedAt, &errStr, &filesJS); err != nil {
+			&t.SavePath, &t.CreatedAt, &t.FinishedAt, &errStr, &filesJS,
+			&peerID, &selected); err != nil {
 			return nil, err
 		}
 		t.Status = task.Status(status)
 		t.Group = group != 0
 		t.Error = errStr.String
+		t.PeerID = peerID.Int64
+		if selected.Valid && selected.String != "" {
+			_ = json.Unmarshal([]byte(selected.String), &t.Selected)
+		}
 		if filesJS.Valid {
 			_ = json.Unmarshal([]byte(filesJS.String), &t.Files)
 		}

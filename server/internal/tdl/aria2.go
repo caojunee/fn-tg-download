@@ -84,6 +84,11 @@ func Aria2Args(o Aria2Options) []string {
 		"--max-tries=5",
 		"--connect-timeout=15",
 		"--timeout=30",
+		// 多连接分段下载：tdl serve 原生支持 Range/206，单连接只有一条
+		// Telegram 拉取流（实测 ~700KB/s），16 连接可并行拉满带宽（~3.1MB/s+）
+		"--max-connection-per-server=16",
+		"--split=16",
+		"--min-split-size=4M",
 		"-d", o.Dir,
 		"-o", o.Out,
 		o.URL,
