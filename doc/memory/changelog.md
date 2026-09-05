@@ -1,5 +1,13 @@
 # 版本记录
 
+## v0.4.7（2026-09-05）
+
+- **下载过程日志补全**（排障关键）：此前任务全程无服务端日志——tdl 子进程的非进度输出（错误/警告/panic 堆栈）在 `pump()` 里被直接丢弃，任务失败只显示 `exit status N`，info.log 只有启动日志。修复：
+  - `download.go`：pump 剥 ANSI 后把非进度行转发 `onLog` 并存尾部缓冲（最近 10 条）；排除 tracker 进度行与渲染噪声行（CPU 统计/进度条，每 100ms 一帧，不排除会刷爆日志）。
+  - `manager.go`：任务启动（含完整 tdl 命令行与保存路径）、失败（含 tdl 输出尾）、完成、导出阶段均打日志；失败时把 tdl 最后输出附加到 task.Error，前端任务卡片直接可见真实原因。
+- **exit status 2 语义确认**：本地实测 tdl v0.20.4——未知 flag/未登录等错误均 exit 1；exit 2 是 Go panic 的退出码。生产「0 B / 121 MB 文件 0/2 exit status 2」疑似 tdl 子进程 panic，panic 堆栈此前被丢弃；本版日志会直接暴露堆栈尾行（`runtime error:` 等）。
+- 版本三处同步 0.4.7。
+
 ## v0.4.6（2026-09-04）
 
 - **私有链接真实探测**：probe 阶段从 tdl 的 peers 缓存（bolt，key `peers:key:channel_:<id>`，value `{"AccessHash":...}`）读取 access hash，`t.me/c/<id>/<msg>` 命中缓存即可完整探测（类型/文件数/大小/真实标题，`ChannelsGetFullChannel` 取标题）；整频道私有链接也取真实标题。未命中缓存的兜底行为不变（放行创建，前端标「私有链接 · 启动后统计」）。

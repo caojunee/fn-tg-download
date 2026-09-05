@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -606,6 +607,14 @@ func (m *Manager) startLocked(task *Task) {
 		Exclude: nil,
 	}
 
+	// tdl 子进程的非进度输出（错误/panic 堆栈/警告）落服务日志：
+	// 之前这些行被直接丢弃，任务失败只显示 "exit status N"，无法排错
+	onLog := func(line string) {
+		log.Printf("tdl[%s] %s", task.ID, line)
+	}
+	log.Printf("task %s start: save=%s tdl %s", task.ID, task.SavePath,
+		strings.Join(tdl.BuildArgs(opts), " "))
+
 	onLine := func(line string) {
 		if s, ok := tdl.ParseProgressLine(line); ok {
 			// 多文件并行时每个 tracker 各有一行，取最大百分比近似总进度
@@ -648,8 +657,9 @@ func (m *Manager) startLocked(task *Task) {
 			}
 			opts.File = exportPath
 			opts.Group = false // 导出列表已含全部相册消息，无需 tdl 再分组
-			dl, err := tdl.Start(ctx, opts, onLine)
+			dl, err := tdl.Start(ctx, opts, onLine, onLog)
 			if err != nil {
+				log.Printf("task %s start failed: %v", task.ID, err)
 				m.failTask(task, r, err.Error())
 				return
 			}
@@ -659,8 +669,9 @@ func (m *Manager) startLocked(task *Task) {
 		return
 	}
 
-	dl, err := tdl.Start(ctx, opts, onLine)
+	dl, err := tdl.Start(ctx, opts, onLine, onLog)
 	if err != nil {
+		log.Printf("task %s start failed: %v", task.ID, err)
 		task.Status = StatusFailed
 		task.Error = err.Error()
 		task.FinishedAt = time.Now().UnixMilli()
@@ -733,6 +744,7 @@ func (r *runner) stopProc() {
 func (m *Manager) runChannelExport(task *Task, r *runner, ctx context.Context, opts tdl.ExportOptions) bool {
 	path := opts.Output
 	if _, err := os.Stat(path); err != nil {
+		log.Printf("task %s export: chat=%s out=%s", task.ID, opts.Chat, opts.Output)
 		ex, err := tdl.StartExport(ctx, opts)
 		if err != nil {
 			m.failTask(task, r, "导出频道消息失败: "+err.Error())
@@ -783,6 +795,7 @@ func (m *Manager) runChannelExport(task *Task, r *runner, ctx context.Context, o
 
 // failTask 标记任务失败并清理调度状态。
 func (m *Manager) failTask(task *Task, r *runner, msg string) {
+	log.Printf("task %s failed: %s", task.ID, msg)
 	m.mu.Lock()
 	if task.Status.Active() {
 		task.Status = StatusFailed
@@ -902,7 +915,16 @@ func (m *Manager) finishTask(task *Task, r *runner, exitErr error) {
 	if task.Status == StatusDownloading {
 		if exitErr != nil {
 			task.Status = StatusFailed
-			task.Error = trimErr(exitErr)
+			msg := trimErr(exitErr)
+			// 附加 tdl 最后的非进度输出（真实错误/panic 堆栈尾行），
+			// 否则前端只能看到 "exit status 2" 这种无信息量的退出码
+			if r.dl != nil {
+				if tail := r.dl.LogTail(); tail != "" {
+					msg += "（tdl: " + tail + "）"
+				}
+			}
+			task.Error = trimErr(errors.New(msg))
+			log.Printf("task %s failed: %s", task.ID, task.Error)
 		} else {
 			task.Status = StatusCompleted
 			task.Progress = 100
@@ -929,6 +951,9 @@ func (m *Manager) finishTask(task *Task, r *runner, exitErr error) {
 				task.Status = StatusFailed
 				task.Error = "未下载到任何文件（消息可能不包含媒体或已失效）"
 				task.Progress = 0
+				log.Printf("task %s failed: no files downloaded", task.ID)
+			} else {
+				log.Printf("task %s completed: %d files, %d bytes", task.ID, len(task.Files), sum)
 			}
 		}
 		task.Speed = 0

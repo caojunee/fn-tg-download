@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -80,10 +82,38 @@ type RunningDownload struct {
 	Cancel func()
 
 	onLine func(string)
+	// onLog 接收 tdl 子进程输出中的非进度行（错误/警告/诊断信息），
+	// 写入服务日志，便于点击下载失败时定位真实原因（进度刷新行不记，避免刷屏）。
+	onLog func(string)
+
+	// logMu/logTail 收集最近若干条非进度行，任务失败时附加到错误信息，
+	// 让前端直接看到 tdl 的真实报错（exit status 2 = Go panic 之类）。
+	logMu   sync.Mutex
+	logTail []string
+}
+
+// logNoiseRe 匹配进度渲染器的噪声行：CPU/内存统计行与进度条行。
+// 这些行每帧（100ms）都会输出但不含 tracker 标记，ParseProgressLine
+// 判为非进度行，若不显式排除会把日志刷爆。进度条 0% 时全为 '.'，
+// 已下载时含 '#'，字符类须同时覆盖（[#.]+ 不能只匹配 # 开头）。
+var logNoiseRe = regexp.MustCompile(`^CPU:.*Memory:.*Goroutines:|\[[#.]+\]`)
+
+// logTailMax 保留的最近非进度行数（失败信息附加用）。
+const logTailMax = 10
+
+// LogTail 返回最近的非进度输出（单行拼接，供错误信息附加）。
+func (r *RunningDownload) LogTail() string {
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+	if len(r.logTail) == 0 {
+		return ""
+	}
+	return strings.Join(r.logTail, " | ")
 }
 
 // Start 启动 tdl dl 子进程，onLine 会在每读取到一行 stdout/stderr 时被调用。
-func Start(ctx context.Context, o DownloadOptions, onLine func(string)) (*RunningDownload, error) {
+// onLog 仅在非进度行（错误/警告/诊断）时被调用，用于排错日志，避免进度刷新刷屏。
+func Start(ctx context.Context, o DownloadOptions, onLine, onLog func(string)) (*RunningDownload, error) {
 	cmdCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(cmdCtx, o.TdlPath, BuildArgs(o)...)
 	cmd.Stdout = nil
@@ -111,6 +141,7 @@ func Start(ctx context.Context, o DownloadOptions, onLine func(string)) (*Runnin
 		Done:   make(chan error, 1),
 		Cancel: cancel,
 		onLine: onLine,
+		onLog:  onLog,
 	}
 
 	go r.pump(stdout)
@@ -141,9 +172,27 @@ func (r *RunningDownload) pump(rd io.ReadCloser) {
 		// 进度条用 \r 原地刷新，一帧内含多个 tracker 行，
 		// 需按 \r 再切分，否则整帧粘成一行无法解析
 		for _, seg := range strings.Split(sc.Text(), "\r") {
-			line := strings.TrimSpace(seg)
-			if line != "" && r.onLine != nil {
+			line := strings.TrimSpace(ansiRe.ReplaceAllString(seg, ""))
+			if line == "" {
+				continue
+			}
+			if r.onLine != nil {
 				r.onLine(line)
+			}
+			// 非进度行（错误/警告/panic 堆栈/tdl 日志）转发给 onLog 并
+			// 存入尾部缓冲；进度渲染噪声行（CPU 统计、进度条）与 tracker
+			// 进度行排除，避免刷屏
+			if _, ok := ParseProgressLine(line); ok || logNoiseRe.MatchString(line) {
+				continue
+			}
+			r.logMu.Lock()
+			r.logTail = append(r.logTail, line)
+			if len(r.logTail) > logTailMax {
+				r.logTail = r.logTail[len(r.logTail)-logTailMax:]
+			}
+			r.logMu.Unlock()
+			if r.onLog != nil {
+				r.onLog(line)
 			}
 		}
 	}

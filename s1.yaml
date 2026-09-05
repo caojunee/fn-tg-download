@@ -1,0 +1,75 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - heading "新建下载" [level=1] [ref=e7]
+    - main [ref=e8]:
+      - generic [ref=e10]:
+        - generic [ref=e12]:
+          - generic [ref=e13]:
+            - generic [ref=e14]:
+              - img [ref=e15]
+              - text: 添加下载链接
+            - generic [ref=e18]:
+              - generic [ref=e19] [cursor=pointer]: 填入示例
+              - generic [ref=e21] [cursor=pointer]: 清空
+          - generic [ref=e22]:
+            - textbox "每行一个链接，支持空格 / 逗号分隔 例如：https://t.me/siwass/6729" [ref=e23]:
+              - /placeholder: "每行一个链接，支持空格 / 逗号分隔\n例如：https://t.me/siwass/6729"
+            - generic [ref=e24]:
+              - generic [ref=e25]: 已识别 0 个链接
+              - generic [ref=e26]: 支持 https://t.me/频道/消息ID
+            - generic [ref=e27]:
+              - button "解析链接" [disabled] [ref=e28]:
+                - generic [ref=e29]:
+                  - img [ref=e31]
+                  - generic [ref=e34]: 解析链接
+              - button "开始下载" [disabled] [ref=e35]:
+                - generic [ref=e36]:
+                  - img [ref=e38]
+                  - generic [ref=e41]: 开始下载
+        - generic [ref=e42]:
+          - generic [ref=e43]:
+            - generic [ref=e45]:
+              - img [ref=e46]
+              - text: 下载选项
+            - generic [ref=e49]:
+              - generic [ref=e50]:
+                - generic [ref=e51]:
+                  - generic [ref=e52]: 相册 / 组合消息探测
+                  - generic [ref=e53]:
+                    - text: 自动检测消息是否为相册或组合消息，并下载其中的全部文件（tdl
+                    - code [ref=e54]: "--group"
+                    - text: ）
+                - switch [checked] [ref=e55] [cursor=pointer]
+              - generic [ref=e58]:
+                - generic [ref=e59]: 保存路径
+                - generic [ref=e60]: 点击下方输入框选择目录，留空则使用系统设置中的默认下载路径
+              - textbox "默认下载路径（点击选择）" [ref=e61] [cursor=pointer]: /vol1/1000/downloads
+              - generic [ref=e62]:
+                - generic [ref=e63]:
+                  - generic [ref=e64]: 并发数
+                  - generic [ref=e65]: 同时进行的文件下载数量
+                - group [ref=e66]:
+                  - button [disabled] [ref=e67]
+                  - spinbutton [ref=e68]: "1"
+                  - button [ref=e69] [cursor=pointer]
+              - generic [ref=e71]: 文件过滤（可选）
+              - textbox "仅下载：mp4,mkv,jpg" [ref=e72]
+              - textbox "排除：zip,rar" [ref=e73]
+          - generic [ref=e75]:
+            - img [ref=e76]
+            - generic [ref=e78]: 需要下载私有频道 / 群组内容时，请先在「用户登录」中完成手机号验证，否则解析会失败。
+  - tablist [ref=e79]:
+    - tab " 新建" [selected] [ref=e80] [cursor=pointer]:
+      - generic [ref=e82]: 
+      - generic [ref=e83]: 新建
+    - tab " 1 任务" [ref=e84] [cursor=pointer]:
+      - generic [ref=e85]:
+        - generic [ref=e86]: 
+        - generic [ref=e87]: "1"
+      - generic [ref=e88]: 任务
+    - tab " 设置" [ref=e89] [cursor=pointer]:
+      - generic [ref=e91]: 
+      - generic [ref=e92]: 设置
+    - tab " 我的" [ref=e93] [cursor=pointer]:
+      - generic [ref=e95]: 
+      - generic [ref=e96]: 我的

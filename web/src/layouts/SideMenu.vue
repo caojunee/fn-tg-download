@@ -66,7 +66,7 @@ const items = computed(() => [
         <span class="sidemenu__engine-dot" />
         <span>tdl 引擎就绪</span>
       </div>
-      <div class="sidemenu__version">v0.4.6 · fpk</div>
+      <div class="sidemenu__version">v0.4.7 · fpk</div>
     </div>
   </aside>
 </template>

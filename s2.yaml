@@ -1,0 +1,115 @@
+- generic [ref=e3]:
+  - complementary [ref=e187]:
+    - generic [ref=e188]:
+      - img [ref=e190]
+      - generic [ref=e193]:
+        - generic [ref=e194]: TG Download
+        - generic [ref=e195]: Telegram 下载器
+    - navigation [ref=e196]:
+      - generic [ref=e199] [cursor=pointer]:
+        - generic [ref=e200]: "Y"
+        - generic [ref=e201]:
+          - generic [ref=e202]: 用户登录
+          - generic [ref=e203]: +861 775***1210
+        - img [ref=e204]
+      - generic [ref=e206] [cursor=pointer]:
+        - img [ref=e207]
+        - generic [ref=e208]: 新建下载
+      - generic [ref=e209] [cursor=pointer]:
+        - img [ref=e210]
+        - generic [ref=e211]: 下载管理
+        - generic [ref=e212]: "1"
+      - generic [ref=e213] [cursor=pointer]:
+        - img [ref=e214]
+        - generic [ref=e217]: 系统管理
+    - generic [ref=e218]:
+      - generic [ref=e221]: tdl 引擎就绪
+      - generic [ref=e222]: v0.4.5 · fpk
+  - generic [ref=e4]:
+    - generic [ref=e6]:
+      - heading "系统管理" [level=1] [ref=e97]
+      - generic [ref=e223]: 基于 tdl 的 Telegram 下载器
+    - main [ref=e8]:
+      - generic [ref=e99]:
+        - generic [ref=e100]:
+          - generic [ref=e102]:
+            - img [ref=e103]
+            - text: 下载路径
+          - generic [ref=e106]:
+            - generic [ref=e107]: 默认保存目录
+            - generic [ref=e108]:
+              - textbox "/vol1/1000/Telegram" [ref=e109]: /vol1/1000/downloads
+              - button "选择" [ref=e110] [cursor=pointer]
+            - generic [ref=e111]: 下载的文件会按「频道名」自动分目录保存，路径需为飞牛 NAS 上已存在的目录。
+        - generic [ref=e112]:
+          - generic [ref=e114]:
+            - img [ref=e115]
+            - text: 代理设置
+          - generic [ref=e120]:
+            - generic [ref=e121]: 代理地址
+            - generic [ref=e122]:
+              - textbox "http://192.168.31.180:20172" [ref=e123]: http://192.168.1.2:20172
+              - button "测试连接" [ref=e124] [cursor=pointer]
+            - generic [ref=e125]:
+              - text: 支持
+              - code [ref=e126]: http://
+              - text: 、
+              - code [ref=e127]: https://
+              - text: 、
+              - code [ref=e128]: socks5://
+              - text: ，例如
+              - code [ref=e129]: http://192.168.31.180:20172
+              - text: 。Telegram 不可直连时必填。
+        - generic [ref=e130]:
+          - generic [ref=e132]:
+            - img [ref=e133]
+            - text: 下载策略
+          - generic [ref=e136]:
+            - generic [ref=e137]:
+              - generic [ref=e138]:
+                - generic [ref=e139]: 默认开启相册 / 组合消息探测
+                - generic [ref=e140]:
+                  - text: 新建下载时默认勾选，自动检测并下载相册与组合消息中的全部文件（tdl
+                  - code [ref=e141]: "--group"
+                  - text: ）
+              - switch [checked] [ref=e142] [cursor=pointer]
+            - generic [ref=e145]:
+              - generic [ref=e146]:
+                - generic [ref=e147]: 默认并发数
+                - generic [ref=e148]: 同时下载的文件数量，过高可能触发 Telegram 限流
+              - group [ref=e149]:
+                - button [disabled] [ref=e150]
+                - spinbutton [ref=e151]: "1"
+                - button [ref=e152] [cursor=pointer]
+            - generic [ref=e154]:
+              - generic [ref=e155]:
+                - generic [ref=e156]: 下载限速（KB/s）
+                - generic [ref=e157]: 0 表示不限速
+              - group [ref=e158]:
+                - button [disabled] [ref=e159]
+                - spinbutton [ref=e160]: "0"
+                - button [ref=e161] [cursor=pointer]
+            - generic [ref=e163]:
+              - generic [ref=e164]:
+                - generic [ref=e165]: 单文件大小上限（MB）
+                - generic [ref=e166]: 超过该大小的文件将跳过不下载，0 表示不限制
+              - group [ref=e167]:
+                - button [disabled] [ref=e168]
+                - spinbutton [ref=e169]: "0"
+                - button [ref=e170] [cursor=pointer]
+        - generic [ref=e171]:
+          - generic [ref=e173]:
+            - img [ref=e174]
+            - text: tdl 引擎
+          - generic [ref=e178]:
+            - generic [ref=e179]: tdl 可执行文件位置
+            - textbox "/usr/local/bin/tdl" [ref=e180]
+            - generic [ref=e181]:
+              - text: 当前版本
+              - code [ref=e182]: vdev
+              - text: · 认证信息保存在
+              - code [ref=e183]: /vol1/@apphome/tg-download/.tdl/data
+              - text: 下的命名空间文件
+        - generic [ref=e184]:
+          - button "重新载入" [ref=e185] [cursor=pointer]
+          - button "保存设置" [ref=e186] [cursor=pointer]
