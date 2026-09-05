@@ -44,6 +44,11 @@ start_process() {
         . "${ENV_FILE}"
     fi
 
+    # tdl 子进程要求 $HOME 存在（缺失时 "panic: $HOME is not defined"，
+    # 任务秒失败 exit status 2）；fnOS 服务环境不设置 HOME，补为应用 home。
+    # 服务端 main.go 也有同款兜底，这里提前到脚本层双保险。
+    export HOME="${TRIM_PKGHOME:-/root}"
+
     # 服务端口：优先用向导填写的 APP_PORT，其次 manifest 声明的 TRIM_SERVICE_PORT
     local port="${APP_PORT:-${TRIM_SERVICE_PORT}}"
 

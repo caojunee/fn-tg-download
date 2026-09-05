@@ -36,6 +36,15 @@ func main() {
 		log.Fatalf("create tdl data dir: %v", err)
 	}
 
+	// tdl v0.20.4 的 consts 包在 init 时读取 $HOME，缺失直接 panic
+	// （"panic: $HOME is not defined"，表现为任务秒失败 exit status 2）。
+	// fnOS 服务环境拉起的应用没有 HOME；tdl 实际存储由 --storage 显式指定，
+	// 这里补一个可写目录仅为满足其初始化检查。
+	if os.Getenv("HOME") == "" {
+		os.Setenv("HOME", cfg.DataDir)
+		log.Printf("HOME not set in environment, fallback to %s (tdl requires $HOME)", cfg.DataDir)
+	}
+
 	st := settings.NewStore(filepath.Join(cfg.DataDir, "settings.json"))
 	if err := st.Load(); err != nil {
 		log.Printf("load settings: %v (using defaults)", err)

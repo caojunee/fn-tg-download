@@ -1,5 +1,11 @@
 # 版本记录
 
+## v0.4.8（2026-09-05）
+
+- **修复生产下载秒失败 `exit status 2`（根因确认）**：v0.4.7 日志显示 tdl 子进程 `panic: $HOME is not defined`（tdl v0.20.4 `pkg/consts` init 时要求 $HOME，缺失即 panic）。SIT 一直正常是因为此前经 SSH 会话手动启动（自带 HOME=/root），生产由 fnOS 服务环境拉起、无 HOME。
+- 修复双保险：`server/main.go` 启动时 `$HOME` 为空则兜底设为 data 目录（tdl 实际存储由 `--storage` 显式指定，HOME 仅为满足其 init 检查）；`cmd/main` 启动前 `export HOME="${TRIM_PKGHOME:-/root}"`。
+- 版本三处同步 0.4.8。
+
 ## v0.4.7（2026-09-05）
 
 - **下载过程日志补全**（排障关键）：此前任务全程无服务端日志——tdl 子进程的非进度输出（错误/警告/panic 堆栈）在 `pump()` 里被直接丢弃，任务失败只显示 `exit status N`，info.log 只有启动日志。修复：
