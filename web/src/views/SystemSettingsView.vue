@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { showSuccessToast, showToast } from 'vant'
 import AppIcon from '@/components/AppIcon.vue'
 import DirPicker from '@/components/DirPicker.vue'
@@ -9,6 +9,15 @@ const settings = useSettingsStore()
 const testing = ref(false)
 const testResult = ref<{ ok: boolean; text: string } | null>(null)
 const pickerShow = ref(false)
+
+/** API_ID 以文本编辑，空串存为 undefined（回落内置身份） */
+const appIdText = computed({
+  get: () => (settings.settings.appId ? String(settings.settings.appId) : ''),
+  set: (v: string) => {
+    const n = Number.parseInt(v.trim(), 10)
+    settings.settings.appId = Number.isFinite(n) && n > 0 ? n : undefined
+  },
+})
 
 onMounted(() => settings.load())
 
@@ -191,6 +200,37 @@ async function onTestProxy() {
               当前版本 <code>v{{ settings.settings.version || 'x' }}</code> · 认证信息保存在
               <code>{{ settings.settings.tdlDataDir || '（后端未提供）' }}</code>
               下的命名空间文件
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Telegram API 身份 -->
+      <div class="app-card">
+        <div class="app-card__header">
+          <div class="app-card__header-title">
+            <AppIcon name="lock" :size="16" />
+            Telegram API 身份（可选）
+          </div>
+        </div>
+        <div class="app-card__body">
+          <div class="set">
+            <div class="set__label">API_ID</div>
+            <input
+              v-model="appIdText"
+              class="set__input"
+              placeholder="留空使用内置身份"
+              inputmode="numeric"
+            />
+            <div class="set__label">API_HASH</div>
+            <input
+              v-model="settings.settings.appHash"
+              class="set__input"
+              placeholder="留空使用内置身份"
+            />
+            <div class="set__desc">
+              在 <code>my.telegram.org</code> → API development tools 申请。保存后重启服务生效，
+              需重新登录 Telegram
             </div>
           </div>
         </div>

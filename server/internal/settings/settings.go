@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -23,6 +24,18 @@ type Settings struct {
 	SpeedLimitKB int `json:"speedLimitKB"`
 	// tdl 可执行文件位置
 	TdlPath string `json:"tdlPath"`
+	// 自定义 Telegram 应用身份（留空则用内置的 tdesktop 身份，
+	// 与 tdl CLI 保持一致以便共用 session）
+	AppID   int    `json:"appId"`
+	AppHash string `json:"appHash"`
+}
+
+// AppCredential 返回生效的应用身份：自定义优先，无效则回落到内置。
+func (s Settings) AppCredential() (int, string, bool) {
+	if s.AppID > 0 && strings.TrimSpace(s.AppHash) != "" {
+		return s.AppID, strings.TrimSpace(s.AppHash), true
+	}
+	return 0, "", false
 }
 
 func Defaults() Settings {

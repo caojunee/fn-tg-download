@@ -95,6 +95,16 @@ func (m *Manager) List() []Task {
 	return out
 }
 
+// Selection 一条链接上用户勾选的下载范围。
+type Selection struct {
+	// PeerID 为 tdl 语义的会话 ID，用于生成 tdl -f 清单
+	PeerID int64
+	// MsgIDs 勾选的消息 ID，为空视为全量
+	MsgIDs []int
+	// Files 为可选项：来自资源清单缓存的名称 / 大小，用于预填任务文件列表
+	Files []File
+}
+
 // CreateInput 创建任务的输入。
 type CreateInput struct {
 	URLs        []string
@@ -103,6 +113,8 @@ type CreateInput struct {
 	Include     []string
 	Exclude     []string
 	ProbeResult map[string]tdl.ProbeResult
+	// Selection 以 URL 为键的选择性下载范围；未包含的 URL 走全量下载
+	Selection map[string]Selection
 }
 
 // Create 为每个 URL 建任务并调度。
@@ -156,6 +168,30 @@ func (m *Manager) Create(in CreateInput) ([]Task, error) {
 		t.Name = pr.Title
 		t.Files = placeholderFiles(pr.FileCount, pr.TotalSize, pr.Title)
 	}
+	// 选择性下载：记录会话 ID 与勾选的消息，文件列表用清单缓存的实际
+	// 名称 / 大小预填（缓存未命中时回退为占位条目）
+	if sel, ok := in.Selection[url]; ok && len(sel.MsgIDs) > 0 {
+		t.PeerID = sel.PeerID
+		t.Selected = sel.MsgIDs
+		total := int64(0)
+		files := make([]File, 0, len(sel.MsgIDs))
+		for i, id := range sel.MsgIDs {
+			if i < len(sel.Files) {
+				files = append(files, sel.Files[i])
+				total += sel.Files[i].Size
+				continue
+			}
+			files = append(files, File{
+				ID:   fmt.Sprintf("%d_%d", sel.PeerID, id),
+				Name: fmt.Sprintf("%d_%d", sel.PeerID, id),
+			})
+		}
+		t.Files = files
+		t.TotalSize = total
+		if t.Kind != "channel" {
+			t.Kind = "selection"
+		}
+	}
 	// 按频道名自动分子目录（与系统设置页文案一致）：
 	// <保存路径>/<频道名>。标题缺失时由 DirNameForURL 从链接回退
 	// （私有频道「频道 <id>」/ 公开频道 username），无法解析则不分子目录。
@@ -167,7 +203,7 @@ func (m *Manager) Create(in CreateInput) ([]Task, error) {
 		t.Kind = "single"
 		t.Files = placeholderFiles(1, 0, url)
 	}
-	if t.Kind == "channel" {
+	if t.Kind == "channel" && len(t.Selected) == 0 {
 		// 整频道任务：真实文件数/大小在启动后的导出阶段填充
 		t.Files = placeholderFiles(1, 0, t.Name)
 	}
@@ -612,9 +648,6 @@ func (m *Manager) startLocked(task *Task) {
 	onLog := func(line string) {
 		log.Printf("tdl[%s] %s", task.ID, line)
 	}
-	log.Printf("task %s start: save=%s tdl %s", task.ID, task.SavePath,
-		strings.Join(tdl.BuildArgs(opts), " "))
-
 	onLine := func(line string) {
 		if s, ok := tdl.ParseProgressLine(line); ok {
 			// 多文件并行时每个 tracker 各有一行，取最大百分比近似总进度
@@ -638,6 +671,38 @@ func (m *Manager) startLocked(task *Task) {
 		}
 	}
 
+	// 选择性下载：按勾选的消息生成 tdl -f 清单直接下载，
+	// 既跳过整频道导出阶段，也精确到「只下选中的这几条」
+	if len(task.Selected) > 0 {
+		selPath := m.selectionPath(task.ID)
+		if err := tdl.WriteSelectionJSON(selPath, task.PeerID, task.Selected); err != nil {
+			log.Printf("task %s build selection failed: %v", task.ID, err)
+			cancel()
+			m.failTask(task, r, "生成下载清单失败: "+err.Error())
+			return
+		}
+		opts.File = selPath
+		opts.Group = false // 清单已精确到消息，无需 tdl 再分组
+		log.Printf("task %s start: selection peer=%d messages=%d file=%s save=%s tdl %s",
+			task.ID, task.PeerID, len(task.Selected), selPath, opts.SavePath,
+			strings.Join(tdl.BuildArgs(opts), " "))
+		dl, err := tdl.Start(ctx, opts, onLine, onLog)
+		if err != nil {
+			log.Printf("task %s start failed: %v", task.ID, err)
+			cancel()
+			m.failTask(task, r, err.Error())
+			return
+		}
+		r.setDL(dl)
+		m.wg.Add(1)
+		go func() {
+			defer m.wg.Done()
+			defer cancel()
+			m.watchTask(task, r)
+		}()
+		return
+	}
+
 	if task.Kind == "channel" {
 		// 整频道任务：先导出频道媒体消息列表，再以 -f 模式批量下载
 		m.wg.Add(1)
@@ -657,6 +722,8 @@ func (m *Manager) startLocked(task *Task) {
 			}
 			opts.File = exportPath
 			opts.Group = false // 导出列表已含全部相册消息，无需 tdl 再分组
+			log.Printf("task %s start: save=%s tdl %s", task.ID, task.SavePath,
+				strings.Join(tdl.BuildArgs(opts), " "))
 			dl, err := tdl.Start(ctx, opts, onLine, onLog)
 			if err != nil {
 				log.Printf("task %s start failed: %v", task.ID, err)
@@ -669,6 +736,8 @@ func (m *Manager) startLocked(task *Task) {
 		return
 	}
 
+	log.Printf("task %s start: save=%s tdl %s", task.ID, task.SavePath,
+		strings.Join(tdl.BuildArgs(opts), " "))
 	dl, err := tdl.Start(ctx, opts, onLine, onLog)
 	if err != nil {
 		log.Printf("task %s start failed: %v", task.ID, err)
@@ -688,6 +757,11 @@ func (m *Manager) startLocked(task *Task) {
 		defer cancel()
 		m.watchTask(task, r)
 	}()
+}
+
+// selectionPath 选择性下载清单的路径（与整频道导出同目录，便于统一清理）。
+func (m *Manager) selectionPath(taskID string) string {
+	return filepath.Join(m.opts.DataDir, "exports", taskID+".selection.json")
 }
 
 // exportPath 整频道任务的消息导出文件路径。

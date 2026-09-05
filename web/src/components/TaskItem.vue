@@ -21,6 +21,7 @@ const kindLabel: Record<MediaKind, string> = {
   album: '相册',
   group: '组合消息',
   channel: '整频道',
+  selection: '自选条目',
 }
 
 const kindIcon = (kind: MediaKind) => (kind === 'single' ? 'file' : kind === 'channel' ? 'folder' : 'layers')

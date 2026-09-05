@@ -50,7 +50,45 @@ func NewMySQL(dsn string) (task.Persister, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	// 旧库缺少后续版本新增的列时自动补充（CREATE TABLE IF NOT EXISTS 不会改表结构）
+	if err := addMissingColumns(db, "tasks", map[string]string{
+		"peer_id":  "BIGINT NOT NULL DEFAULT 0",
+		"selected": "MEDIUMTEXT NULL",
+	}); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate columns: %w", err)
+	}
 	return &mysqlStore{db: db}, nil
+}
+
+// addMissingColumns 为已存在的表补充缺失列（幂等）。
+func addMissingColumns(db *sql.DB, table string, cols map[string]string) error {
+	rows, err := db.Query(`SELECT COLUMN_NAME FROM information_schema.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`, table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	have := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for col, def := range cols {
+		if have[col] {
+			continue
+		}
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, col, def)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type mysqlStore struct {
@@ -59,15 +97,17 @@ type mysqlStore struct {
 
 const upsertSQL = `INSERT INTO tasks
 	(id, name, url, chat_title, message_id, kind, group_flag, total_size, downloaded_size,
-	 speed, progress, status, save_path, created_at, finished_at, error, files)
-	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	 speed, progress, status, save_path, created_at, finished_at, error, files,
+	 peer_id, selected)
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	ON DUPLICATE KEY UPDATE
 		name=VALUES(name), url=VALUES(url), chat_title=VALUES(chat_title),
 		message_id=VALUES(message_id), kind=VALUES(kind), group_flag=VALUES(group_flag),
 		total_size=VALUES(total_size), downloaded_size=VALUES(downloaded_size),
 		speed=VALUES(speed), progress=VALUES(progress), status=VALUES(status),
 		save_path=VALUES(save_path), created_at=VALUES(created_at),
-		finished_at=VALUES(finished_at), error=VALUES(error), files=VALUES(files)`
+		finished_at=VALUES(finished_at), error=VALUES(error), files=VALUES(files),
+		peer_id=VALUES(peer_id), selected=VALUES(selected)`
 
 func (s *mysqlStore) Save(tasks []*task.Task) error {
 	tx, err := s.db.Begin()
@@ -94,9 +134,17 @@ func (s *mysqlStore) Save(tasks []*task.Task) error {
 		} else {
 			filesStr = "[]"
 		}
+		// 选中下载的消息 ID 列表（为空表示整条链接全量下载）
+		var selStr any
+		if len(t.Selected) > 0 {
+			if b, err := json.Marshal(t.Selected); err == nil {
+				selStr = string(b)
+			}
+		}
 		if _, err := stmt.Exec(t.ID, t.Name, t.URL, t.ChatTitle, t.MessageID, t.Kind,
 			t.Group, t.TotalSize, t.DownloadedSize, t.Speed, t.Progress, string(t.Status),
-			t.SavePath, t.CreatedAt, t.FinishedAt, errStr, filesStr); err != nil {
+			t.SavePath, t.CreatedAt, t.FinishedAt, errStr, filesStr,
+			t.PeerID, selStr); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -107,7 +155,8 @@ func (s *mysqlStore) Save(tasks []*task.Task) error {
 func (s *mysqlStore) Load() ([]*task.Task, error) {
 	rows, err := s.db.Query(`SELECT id, name, url, chat_title, message_id, kind, group_flag,
 		total_size, downloaded_size, speed, progress, status, save_path,
-		created_at, finished_at, error, files FROM tasks ORDER BY created_at ASC`)
+		created_at, finished_at, error, files, peer_id, selected
+		FROM tasks ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}

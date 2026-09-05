@@ -53,6 +53,10 @@ type ClientConfig struct {
 	DataDir   string // tdl bolt 目录
 	Namespace string
 	Proxy     string
+	// AppID / AppHash 为可选的应用身份；为空（AppID<=0 或 AppHash 为空）
+	// 时回落到内置的 tdesktop 身份（与 tdl CLI 一致，保证 session 共用）。
+	AppID   int
+	AppHash string
 }
 
 // sessionBridge 把 BoltKV 适配为 gotd 的 telegram.SessionStorage。
@@ -88,7 +92,11 @@ func newClient(ctx context.Context, cfg ClientConfig, isLogin bool) (*telegram.C
 		_ = kv.Close()
 		return nil, nil, err
 	}
-	client := telegram.NewClient(AppID, AppHash, telegram.Options{
+	appID, appHash := AppID, AppHash
+	if cfg.AppID > 0 && strings.TrimSpace(cfg.AppHash) != "" {
+		appID, appHash = cfg.AppID, strings.TrimSpace(cfg.AppHash)
+	}
+	client := telegram.NewClient(appID, appHash, telegram.Options{
 		SessionStorage: &sessionBridge{kv: kv, isLogin: isLogin},
 		Device:         deviceInfo,
 		Resolver:       resolverWithDialer(dialer),

@@ -4,8 +4,10 @@ import { useRouter } from 'vue-router'
 import { showSuccessToast, showToast } from 'vant'
 import AppIcon from '@/components/AppIcon.vue'
 import DirPicker from '@/components/DirPicker.vue'
+import ResourcePicker from '@/components/ResourcePicker.vue'
 import { probe } from '@/api/download'
 import type { ProbeResult } from '@/api/download'
+import type { DownloadSelection } from '@/types'
 import { useDownloadStore } from '@/stores/download'
 import { useSettingsStore } from '@/stores/settings'
 import { useUserStore } from '@/stores/user'
@@ -42,6 +44,43 @@ const includeExt = ref('')
 const excludeExt = ref('')
 const pickerShow = ref(false)
 
+/** 资源选择器状态 */
+const resourceShow = ref(false)
+const resourceUrl = ref('')
+/** 链接 → 用户勾选的范围（含总大小，仅用于界面统计） */
+interface SelectionState extends DownloadSelection {
+  totalSize: number
+}
+const selections = ref<Record<string, SelectionState>>({})
+
+/** 支持资源选择的链接类型：整频道 / 相册 / 组合消息 */
+const selectable = (item: ProbeResult) => item.kind === 'channel' || item.kind === 'album' || item.kind === 'group'
+
+function openResources(item: ProbeResult) {
+  resourceUrl.value = item.url
+  resourceShow.value = true
+}
+
+function onPicked(url: string, sel: DownloadSelection & { totalSize: number }) {
+  selections.value = { ...selections.value, [url]: { ...sel } }
+}
+
+/** 已手动勾选下载范围的链接数 */
+const pickedCount = computed(() => Object.keys(selections.value).length)
+
+function clearSelection(url: string) {
+  const next = { ...selections.value }
+  delete next[url]
+  selections.value = next
+}
+
+/** 一条链接当前勾选状态的展示文案 */
+function selectionText(url: string): string {
+  const sel = selections.value[url]
+  if (!sel) return '选择资源'
+  return `已选 ${sel.msgIds.length} 个 · ${formatSize(sel.totalSize)}`
+}
+
 const urlList = computed(() =>
   Array.from(
     new Set(
@@ -74,6 +113,7 @@ function clearAll() {
   rawUrls.value = ''
   results.value = []
   probed.value = false
+  selections.value = {}
 }
 
 async function onProbe() {
@@ -97,7 +137,8 @@ async function onProbe() {
 }
 
 function removeResult(index: number) {
-  results.value.splice(index, 1)
+  const [item] = results.value.splice(index, 1)
+  if (item) clearSelection(item.url)
 }
 
 async function onStart() {
@@ -117,6 +158,7 @@ async function onStart() {
     concurrency: concurrency.value,
     include: includeExt.value || undefined,
     exclude: excludeExt.value || undefined,
+    selected: pickedCount.value ? selections.value : undefined,
   })
   showSuccessToast(`已创建 ${created.length} 个下载任务`)
   rawUrls.value = ''
@@ -201,6 +243,9 @@ async function onStart() {
               <span v-if="privateCount" class="new__album-tip">
                 其中 {{ privateCount }} 条私有链接启动后统计
               </span>
+              <span v-if="pickedCount" class="new__album-tip">
+                已手动选择 {{ pickedCount }} 条链接的下载范围
+              </span>
             </div>
           </div>
 
@@ -227,6 +272,15 @@ async function onStart() {
               <span v-if="item.kind === 'channel'" class="probe__badge"> 整频道下载 </span>
               <span v-else-if="item.error && isPrivateUrl(item.url)" class="probe__badge"> 私有链接 </span>
               <span v-else-if="item.kind !== 'single'" class="probe__badge"> 相册 / 组合消息 </span>
+              <span
+                v-if="selectable(item)"
+                class="probe__pick"
+                :class="{ 'probe__pick--on': selections[item.url] }"
+                @click="openResources(item)"
+              >
+                <AppIcon name="list" :size="13" />
+                {{ selectionText(item.url) }}
+              </span>
               <span class="probe__remove" @click="removeResult(index)">
                 <AppIcon name="close" :size="14" />
               </span>
@@ -300,6 +354,13 @@ async function onStart() {
         </div>
       </div>
     </div>
+
+    <!-- 资源选择器：解析后按链接选择部分资源下载 -->
+    <ResourcePicker
+      v-model:show="resourceShow"
+      :url="resourceUrl"
+      @confirm="(sel) => onPicked(resourceUrl, sel)"
+    />
   </div>
 </template>
 
@@ -501,6 +562,36 @@ async function onStart() {
     color: $color-primary;
     background: $color-primary-light;
     border-radius: 999px;
+  }
+
+  &__pick {
+    display: flex;
+    flex: none;
+    gap: 5px;
+    align-items: center;
+    max-width: 190px;
+    padding: 4px 10px;
+    overflow: hidden;
+    font-size: 11.5px;
+    color: $color-primary;
+    cursor: pointer;
+    white-space: nowrap;
+    border: 1px solid rgba(45, 140, 240, 0.4);
+    border-radius: 999px;
+    transition:
+      background 0.16s,
+      color 0.16s;
+
+    &:hover {
+      color: #fff;
+      background: $color-primary;
+    }
+
+    &--on {
+      color: #fff;
+      background: $color-primary;
+      border-color: $color-primary;
+    }
   }
 
   &__remove {

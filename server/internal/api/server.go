@@ -27,11 +27,15 @@ type Server struct {
 	// 登录流程：单用户场景，同一时刻最多一个进行中的验证码登录
 	loginMu sync.Mutex
 	flow    *tdl.Flow
+
+	// 资源清单缓存：url → 最近一次枚举结果，用于创建任务时
+	// 回填选中项的文件名与大小（枚举成本高，不重复拉取）
+	resCache *resourceCache
 }
 
 // New 创建 Server。
 func New(cfg config.Config, st *settings.Store, tm *task.Manager) *Server {
-	return &Server{cfg: cfg, settings: st, tasks: tm}
+	return &Server{cfg: cfg, settings: st, tasks: tm, resCache: newResourceCache()}
 }
 
 // ---- 统一响应 {code, message, data} ----
@@ -80,6 +84,10 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/download/tasks/{id}/resume", s.taskAction("resume"))
 	mux.HandleFunc("POST /api/download/tasks/{id}/cancel", s.taskAction("cancel"))
 	mux.HandleFunc("POST /api/download/tasks/{id}/retry", s.taskAction("retry"))
+
+	// 资源选择（整频道 / 相册：列出可选条目并按需取缩略图）
+	mux.HandleFunc("POST /api/resource/list", s.handleListResources)
+	mux.HandleFunc("GET /api/resource/thumb", s.handleResourceThumb)
 
 	// 设置
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)

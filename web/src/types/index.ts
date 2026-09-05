@@ -22,8 +22,37 @@ export interface CountryCode {
 /** 下载任务状态 */
 export type TaskStatus = 'pending' | 'downloading' | 'paused' | 'completed' | 'failed' | 'canceled'
 
-/** 消息类型：单条 / 相册 / 组合消息 */
-export type MediaKind = 'single' | 'album' | 'group' | 'channel'
+/** 消息类型：单条 / 相册 / 组合消息 / 整频道 / 自选条目 */
+export type MediaKind = 'single' | 'album' | 'group' | 'channel' | 'selection'
+
+/** 一条可选媒体资源（资源选择器用） */
+export interface Resource {
+  /** 唯一键「<会话ID>_<消息ID>」，同时用于取缩略图 */
+  key: string
+  msgId: number
+  name: string
+  size: number
+  mime: string
+  /** photo | video | audio | document */
+  kind: string
+  /** 毫秒时间戳 */
+  date: number
+  hasThumb: boolean
+  thumbUrl?: string
+}
+
+/** 一条链接解析出的资源清单 */
+export interface ResourceSet {
+  url: string
+  chatTitle: string
+  /** tdl 语义的会话 ID，创建任务时原样回传 */
+  peerId: number
+  /** channel | album | single | range */
+  kind: string
+  total: number
+  resources: Resource[]
+  error?: string
+}
 
 export interface DownloadFile {
   id: string
@@ -73,6 +102,15 @@ export interface CreateDownloadPayload {
   exclude?: string
   /** 文件名模板 */
   template?: string
+  /** 选择性下载：链接 → 勾选范围（未列出的链接走全量下载） */
+  selected?: Record<string, DownloadSelection>
+}
+
+/** 一条链接上用户勾选的下载范围 */
+export interface DownloadSelection {
+  /** 资源清单返回的会话 ID */
+  peerId: number
+  msgIds: number[]
 }
 
 /** 系统设置 */
@@ -93,6 +131,10 @@ export interface SystemSettings {
   tdlPath: string
   /** tdl 数据目录（登录态 session 所在，官方布局 <dir>/<namespace>） */
   tdlDataDir?: string
+  /** 自定义 Telegram 应用 ID，留空用内置身份 */
+  appId?: number
+  /** 自定义 Telegram 应用 Hash，留空用内置身份 */
+  appHash?: string
   /** 后端版本号（构建注入） */
   version?: string
 }

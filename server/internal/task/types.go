@@ -41,6 +41,11 @@ type Task struct {
 	Progress       float64 `json:"progress"`
 	Status         Status  `json:"status"`
 	SavePath       string  `json:"savePath"`
+	// PeerID 为 tdl 语义的会话 ID（私有频道为原始 channel id）。
+	// 仅在选择部分资源下载时有值，用于生成 tdl -f 清单。
+	PeerID int64 `json:"peerId,omitempty"`
+	// Selected 为用户勾选的消息 ID；为空表示下载整条链接的全部内容。
+	Selected []int `json:"selected,omitempty"`
 	CreatedAt      int64   `json:"createdAt"`
 	FinishedAt     int64   `json:"finishedAt,omitempty"`
 	Error          string  `json:"error,omitempty"`

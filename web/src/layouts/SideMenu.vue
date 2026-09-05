@@ -3,8 +3,16 @@ import { computed } from 'vue'
 import UserMenu from './UserMenu.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import { useDownloadStore } from '@/stores/download'
+import { useSettingsStore } from '@/stores/settings'
 
 const download = useDownloadStore()
+const settings = useSettingsStore()
+
+/** 版本号跟随后端 /api/settings 返回（构建注入），未拿到时只显示 fpk */
+const versionLabel = computed(() => {
+  const v = settings.settings.version
+  return v ? `v${v} · fpk` : 'fpk'
+})
 
 /** 嵌在飞牛 iframe 里时系统标题栏已展示应用名+图标，品牌区隐藏避免重复 */
 const embedded = window.self !== window.top
@@ -66,7 +74,7 @@ const items = computed(() => [
         <span class="sidemenu__engine-dot" />
         <span>tdl 引擎就绪</span>
       </div>
-      <div class="sidemenu__version">v0.4.8 · fpk</div>
+      <div class="sidemenu__version">{{ versionLabel }}</div>
     </div>
   </aside>
 </template>

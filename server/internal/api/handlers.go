@@ -17,10 +17,13 @@ import (
 // clientConfig 从当前设置组装 Telegram 客户端配置。
 func (s *Server) clientConfig() tdl.ClientConfig {
 	cfg := s.settings.Get()
+	appID, appHash, _ := cfg.AppCredential()
 	return tdl.ClientConfig{
 		DataDir:   s.cfg.TdlDataDir,
 		Namespace: s.cfg.Namespace,
 		Proxy:     cfg.Proxy,
+		AppID:     appID,
+		AppHash:   appHash,
 	}
 }
 
@@ -165,13 +168,21 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 	ok(w, results)
 }
 
+// createSelectionReq 前端在选择资源后提交的勾选范围。
+type createSelectionReq struct {
+	// PeerID 由资源清单接口返回，用于生成 tdl -f 清单
+	PeerID int64 `json:"peerId"`
+	MsgIDs []int `json:"msgIds"`
+}
+
 type createReq struct {
-	URLs        []string `json:"urls"`
-	Group       bool     `json:"group"`
-	SavePath    string   `json:"savePath"`
-	Include     string   `json:"include"`
-	Exclude     string   `json:"exclude"`
-	Concurrency int      `json:"concurrency"`
+	URLs        []string                      `json:"urls"`
+	Group       bool                          `json:"group"`
+	SavePath    string                        `json:"savePath"`
+	Include     string                        `json:"include"`
+	Exclude     string                        `json:"exclude"`
+	Concurrency int                           `json:"concurrency"`
+	Selected    map[string]createSelectionReq `json:"selected"`
 }
 
 func splitCSV(s string) []string {
@@ -233,6 +244,20 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Skipped-Reasons", strings.Join(reasons, "\n"))
 	}
 
+	// 选择性下载：按 URL 组装勾选范围，文件名 / 大小优先从资源清单缓存回填
+	selection := map[string]task.Selection{}
+	for u, sel := range req.Selected {
+		u = strings.TrimSpace(u)
+		if u == "" || len(sel.MsgIDs) == 0 {
+			continue
+		}
+		selection[u] = task.Selection{
+			PeerID: sel.PeerID,
+			MsgIDs: sel.MsgIDs,
+			Files:  s.resCache.selectionFiles(u, sel.MsgIDs),
+		}
+	}
+
 	tasks, err := s.tasks.Create(task.CreateInput{
 		URLs:        valid,
 		Group:       req.Group,
@@ -240,6 +265,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		Include:     splitCSV(req.Include),
 		Exclude:     splitCSV(req.Exclude),
 		ProbeResult: probeMap,
+		Selection:   selection,
 	})
 	if err != nil {
 		fail(w, codeBizErr, "创建任务失败: "+err.Error())
