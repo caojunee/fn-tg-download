@@ -85,6 +85,9 @@ type RunningDownload struct {
 	// onLog 接收 tdl 子进程输出中的非进度行（错误/警告/诊断信息），
 	// 写入服务日志，便于点击下载失败时定位真实原因（进度刷新行不记，避免刷屏）。
 	onLog func(string)
+	// classify 判定一行输出是否为进度行；nil 时按 tdl 规则
+	// （ParseProgressLine + 噪声过滤）。aria2 等其他子进程传入自己的判定。
+	classify func(string) bool
 
 	// logMu/logTail 收集最近若干条非进度行，任务失败时附加到错误信息，
 	// 让前端直接看到 tdl 的真实报错（exit status 2 = Go panic 之类）。
@@ -182,7 +185,14 @@ func (r *RunningDownload) pump(rd io.ReadCloser) {
 			// 非进度行（错误/警告/panic 堆栈/tdl 日志）转发给 onLog 并
 			// 存入尾部缓冲；进度渲染噪声行（CPU 统计、进度条）与 tracker
 			// 进度行排除，避免刷屏
-			if _, ok := ParseProgressLine(line); ok || logNoiseRe.MatchString(line) {
+			isProgress := false
+			if r.classify != nil {
+				isProgress = r.classify(line)
+			} else {
+				_, ok := ParseProgressLine(line)
+				isProgress = ok || logNoiseRe.MatchString(line)
+			}
+			if isProgress {
 				continue
 			}
 			r.logMu.Lock()

@@ -72,6 +72,7 @@ func main() {
 		TdlDataDir: cfg.TdlDataDir,
 		Namespace:  cfg.Namespace,
 		TdlPath:    cfg.TdlPath,
+		Aria2Path:  cfg.Aria2Path,
 		Persist:    persist,
 	})
 	if err := tm.Load(); err != nil {

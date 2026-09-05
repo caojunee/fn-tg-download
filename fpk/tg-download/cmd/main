@@ -64,7 +64,7 @@ start_process() {
 
     # 包内文件权限被打包工具归一为 666，解包后需补执行位，
     # 否则直接启动会 Permission denied（scp 覆盖二进制后同理）
-    chmod 755 "${APP_DIR}/server" "${APP_DIR}/bin/tdl" 2>/dev/null
+    chmod 755 "${APP_DIR}/server" "${APP_DIR}/bin/tdl" "${APP_DIR}/bin/aria2c" 2>/dev/null
 
     # 端口占用预检：被占用则报错退出，提示改端口
     if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
@@ -81,7 +81,7 @@ start_process() {
     fi
 
     local cmd
-    cmd="${APP_DIR}/server -addr 0.0.0.0:${port} -web ${APP_DIR}/web -data-dir ${DATA_DIR} -tdl ${APP_DIR}/bin/tdl -tdl-data ${TDL_DATA_DIR} ${dsn_args}"
+    cmd="${APP_DIR}/server -addr 0.0.0.0:${port} -web ${APP_DIR}/web -data-dir ${DATA_DIR} -tdl ${APP_DIR}/bin/tdl -aria2 ${APP_DIR}/bin/aria2c -tdl-data ${TDL_DATA_DIR} ${dsn_args}"
 
     log_msg "Starting server: ${cmd}"
     bash -c "${cmd}" >> "${LOG_FILE}" 2>&1 &

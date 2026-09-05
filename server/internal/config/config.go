@@ -15,6 +15,8 @@ type Config struct {
 	DataDir string
 	// tdl 可执行文件路径
 	TdlPath string
+	// aria2c 可执行文件路径（serve+aria2 字节级续传下载器）
+	Aria2Path string
 	// tdl bolt 存储目录（对应 tdl --storage type=bolt,path=<TdlDataDir>）
 	TdlDataDir string
 	// tdl namespace，默认 default
@@ -44,6 +46,7 @@ func Default() Config {
 		Addr:       "127.0.0.1:8080",
 		DataDir:    filepath.Join(base, "data"),
 		TdlPath:    findTdl(base),
+		Aria2Path:  findBin(base, "aria2c"),
 		TdlDataDir: filepath.Join(base, "data", "tdl-data"),
 		Namespace:  "default",
 		WebDir:     filepath.Join(base, "web"),
@@ -51,18 +54,22 @@ func Default() Config {
 }
 
 func findTdl(base string) string {
+	return findBin(base, "tdl")
+}
+
+func findBin(base, name string) string {
 	candidates := []string{
-		filepath.Join(base, "bin", "tdl"),
-		filepath.Join(base, "bin", "tdl.exe"),
-		filepath.Join(base, "tdl"),
-		filepath.Join(base, "tdl.exe"),
+		filepath.Join(base, "bin", name),
+		filepath.Join(base, "bin", name+".exe"),
+		filepath.Join(base, name),
+		filepath.Join(base, name+".exe"),
 	}
 	for _, p := range candidates {
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
 			return p
 		}
 	}
-	return "tdl"
+	return name
 }
 
 // BindFlags 将配置绑定到命令行 flags。
@@ -70,6 +77,7 @@ func (c *Config) BindFlags() {
 	flag.StringVar(&c.Addr, "addr", c.Addr, "HTTP listen address")
 	flag.StringVar(&c.DataDir, "data-dir", c.DataDir, "server data dir (tasks/settings)")
 	flag.StringVar(&c.TdlPath, "tdl", c.TdlPath, "path to tdl binary")
+	flag.StringVar(&c.Aria2Path, "aria2", c.Aria2Path, "path to aria2c binary (byte-level resume downloader)")
 	flag.StringVar(&c.TdlDataDir, "tdl-data", c.TdlDataDir, "tdl bolt storage dir (--storage path)")
 	flag.StringVar(&c.Namespace, "ns", c.Namespace, "tdl namespace")
 	flag.StringVar(&c.WebDir, "web", c.WebDir, "static web dist dir (empty to disable)")

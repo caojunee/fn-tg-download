@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -26,6 +27,7 @@ type Options struct {
 	TdlDataDir string    // tdl bolt 存储目录
 	Namespace  string    //
 	TdlPath    string    //
+	Aria2Path  string    // aria2c 可执行文件（serve+aria2 字节级续传下载路径）
 	Persist    Persister // 任务持久化实现；nil 时回退到 JSON 文件
 }
 
@@ -38,6 +40,9 @@ type Manager struct {
 	tasks   []*Task
 	running map[string]*runner
 	wg      sync.WaitGroup
+
+	// serveGate 串行化 serve 下载任务（tdl serve 独占 bolt 存储锁）
+	serveGate chan struct{}
 }
 
 type runner struct {
@@ -51,6 +56,12 @@ type runner struct {
 
 	expectedFiles int // 探测/导出阶段已知的期望文件数，首次同步时捕获
 
+	// serve+aria2 下载路径（字节级续传）：
+	serve      *tdl.ServeProc    // tdl serve 子进程（任务结束/暂停时终止）
+	serveFiles []tdl.ServeFile   // serve 端点文件清单（取消清理分片用）
+	ariaPct    float64           // 当前文件的 aria2 百分比
+	ariaLastDl int64             // 上一秒累计已下载字节（速度差分用）
+
 	fm          sync.Mutex         // 保护 filePerc/fileNames（onLine 与 watchTask 不同 goroutine）
 	filePerc    map[string]float64 // stdout 追踪到的下载单元 → 最新百分比，键为 "对话ID_消息ID"
 	fileNames   map[string]string  // 已解析到的真实磁盘文件名，键同上（可能滞后一拍）
@@ -60,7 +71,9 @@ func NewManager(opts Options) *Manager {
 	if opts.Persist == nil {
 		opts.Persist = NewJSONPersister(opts.DataDir)
 	}
-	return &Manager{opts: opts, running: map[string]*runner{}}
+	// tdl serve 持有 bolt 存储锁：任意时刻只能有一个 serve 下载任务，
+	// 其余任务在此信号量上排队（并发数大于 1 时也强制串行下载）
+	return &Manager{opts: opts, running: map[string]*runner{}, serveGate: make(chan struct{}, 1)}
 }
 
 // Load 从持久化层恢复任务列表；进行中/等待中的任务在服务重启后置为暂停。
@@ -406,8 +419,13 @@ func (m *Manager) Cancel(id string, deletePartial bool) error {
 			for k := range r.filePerc {
 				keys = append(keys, k)
 			}
+			serveFiles := r.serveFiles
 			r.fm.Unlock()
 			removePartials(t.SavePath, keys, m.otherRunningPrefixes(id))
+			// serve 路径：删除半成品与 .aria2 控制文件
+			if len(serveFiles) > 0 {
+				removeServePartials(t.SavePath, serveFiles)
+			}
 		}
 	}
 	return nil
@@ -613,6 +631,10 @@ func (m *Manager) pumpLocked() {
 }
 
 // startLocked 启动一个任务（需持有 m.mu）。
+// 统一走 serve+aria2 路径：tdl dl --serve 把文件暴露成本地 HTTP 端点
+// （支持 Range/206），aria2c -c 逐文件下载——暂停/失败后凭 .aria2 控制
+// 文件实现字节级断点续传（tdl 内置下载器只有文件级续传，半成品 .tmp
+// 会被截断重下）。
 func (m *Manager) startLocked(task *Task) {
 	cfg := m.opts.Settings.Get()
 
@@ -626,53 +648,8 @@ func (m *Manager) startLocked(task *Task) {
 	_ = os.MkdirAll(task.SavePath, 0o755)
 	r.base = dirSize(task.SavePath)
 
-	opts := tdl.DownloadOptions{
-		TdlPath:   m.opts.TdlPath,
-		DataDir:   m.opts.TdlDataDir,
-		Namespace: m.opts.Namespace,
-		Proxy:     cfg.Proxy,
-		URL:       task.URL,
-		SavePath:  task.SavePath,
-		Group:     task.Group,
-		// tdl 断点续传为「文件级」：已完成的文件续传时秒跳过，但下载到一半的
-		// 文件会被截断重下。单并发（-l 1）保证暂停/失败时最多只损失 1 个
-		// 文件的部分进度。
-		Limit:   1,
-		Threads: 4,
-		Include: nil,
-		Exclude: nil,
-	}
-
-	// tdl 子进程的非进度输出（错误/panic 堆栈/警告）落服务日志：
-	// 之前这些行被直接丢弃，任务失败只显示 "exit status N"，无法排错
-	onLog := func(line string) {
-		log.Printf("tdl[%s] %s", task.ID, line)
-	}
-	onLine := func(line string) {
-		if s, ok := tdl.ParseProgressLine(line); ok {
-			// 多文件并行时每个 tracker 各有一行，取最大百分比近似总进度
-			if s.Percent > r.percent {
-				r.percent = s.Percent
-			}
-			// 瞬时速率：读取方每秒清零，空闲时自然衰减
-			if s.Speed > r.speed {
-				r.speed = s.Speed
-			}
-			// 追踪下载单元（键 "对话ID_消息ID"）。tracker 行不含文件名，
-			// 真实文件名由 watchTask 按 {对话ID}_{消息ID}_ 前缀从磁盘解析
-			if s.DialogID != "" && s.MsgID != "" {
-				r.fm.Lock()
-				if r.filePerc == nil {
-					r.filePerc = make(map[string]float64)
-				}
-				r.filePerc[s.DialogID+"_"+s.MsgID] = s.Percent
-				r.fm.Unlock()
-			}
-		}
-	}
-
-	// 选择性下载：按勾选的消息生成 tdl -f 清单直接下载，
-	// 既跳过整频道导出阶段，也精确到「只下选中的这几条」
+	// 下载来源：selection 清单 / 链接（整频道在 goroutine 内先导出）
+	srcURL, srcFile := task.URL, ""
 	if len(task.Selected) > 0 {
 		selPath := m.selectionPath(task.ID)
 		if err := tdl.WriteSelectionJSON(selPath, task.PeerID, task.Selected); err != nil {
@@ -681,34 +658,17 @@ func (m *Manager) startLocked(task *Task) {
 			m.failTask(task, r, "生成下载清单失败: "+err.Error())
 			return
 		}
-		opts.File = selPath
-		opts.Group = false // 清单已精确到消息，无需 tdl 再分组
-		log.Printf("task %s start: selection peer=%d messages=%d file=%s save=%s tdl %s",
-			task.ID, task.PeerID, len(task.Selected), selPath, opts.SavePath,
-			strings.Join(tdl.BuildArgs(opts), " "))
-		dl, err := tdl.Start(ctx, opts, onLine, onLog)
-		if err != nil {
-			log.Printf("task %s start failed: %v", task.ID, err)
-			cancel()
-			m.failTask(task, r, err.Error())
-			return
-		}
-		r.setDL(dl)
-		m.wg.Add(1)
-		go func() {
-			defer m.wg.Done()
-			defer cancel()
-			m.watchTask(task, r)
-		}()
-		return
+		srcFile = selPath
+		log.Printf("task %s source: selection peer=%d messages=%d file=%s save=%s",
+			task.ID, task.PeerID, len(task.Selected), selPath, task.SavePath)
 	}
 
-	if task.Kind == "channel" {
-		// 整频道任务：先导出频道媒体消息列表，再以 -f 模式批量下载
-		m.wg.Add(1)
-		go func() {
-			defer m.wg.Done()
-			defer cancel()
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		defer cancel()
+		if srcFile == "" && task.Kind == "channel" {
+			// 整频道任务：先导出频道媒体消息清单（serve 与下载共用）
 			exportPath := m.exportPath(task.ID)
 			if !m.runChannelExport(task, r, ctx, tdl.ExportOptions{
 				TdlPath:   m.opts.TdlPath,
@@ -720,43 +680,425 @@ func (m *Manager) startLocked(task *Task) {
 			}) {
 				return // 已终止或失败
 			}
-			opts.File = exportPath
-			opts.Group = false // 导出列表已含全部相册消息，无需 tdl 再分组
-			log.Printf("task %s start: save=%s tdl %s", task.ID, task.SavePath,
-				strings.Join(tdl.BuildArgs(opts), " "))
-			dl, err := tdl.Start(ctx, opts, onLine, onLog)
+			srcFile = exportPath
+		}
+		m.runServeTask(task, r, ctx, srcURL, srcFile)
+	}()
+}
+
+// errStopped 内部哨兵：任务被暂停/取消终止（非错误，不落失败状态）。
+var errStopped = errors.New("task stopped")
+
+// runServeTask serve+aria2 下载流程：
+//  1. 启动 tdl dl --serve，等待索引就绪并获取文件清单（真实文件名+大小）
+//  2. 逐文件调用 aria2c -c 下载（<名字>.aria2 控制文件记录断点）
+//  3. 暂停/取消：终止 aria2 与 serve，保留控制文件 → 恢复时字节级续传
+//  4. 失败：单文件自动重试 3 次，仍失败则整个任务失败（控制文件保留）
+//
+// serve 进程独占 tdl bolt 存储锁，任务在 m.serveGate 上排队串行执行。
+func (m *Manager) runServeTask(task *Task, r *runner, ctx context.Context, srcURL, srcFile string) {
+	cfg := m.opts.Settings.Get()
+
+	// bolt 锁互斥：并发数大于 1 时其余任务在此排队
+	select {
+	case m.serveGate <- struct{}{}:
+		defer func() { <-m.serveGate }()
+	case <-ctx.Done():
+		close(r.stopped)
+		return
+	}
+
+	// 排队期间任务可能已被暂停/取消
+	m.mu.Lock()
+	st := task.Status
+	m.mu.Unlock()
+	if st != StatusDownloading {
+		close(r.stopped)
+		return
+	}
+
+	ariaBin := m.aria2Bin()
+	if ariaBin == "" {
+		m.failTask(task, r, "未找到 aria2c 可执行文件（字节级续传下载器），请检查安装")
+		return
+	}
+
+	onLog := func(line string) { log.Printf("tdl[%s] %s", task.ID, line) }
+
+	// tdl serve 不展开相册（--group 仅作用于内置下载器）：相册链接先
+	// 用资源枚举自行展开为消息清单，转 -f 喂给 serve。失败时回落单条
+	// 下载，不阻塞任务。
+	if srcFile == "" && task.Group {
+		set := tdl.ListResources(ctx, tdl.ClientConfig{
+			DataDir:   m.opts.TdlDataDir,
+			Namespace: m.opts.Namespace,
+			Proxy:     cfg.Proxy,
+			AppID:     cfg.AppID,
+			AppHash:   cfg.AppHash,
+		}, srcURL)
+		if set.Error == "" && (set.Kind == "album" || set.Kind == "group") && set.PeerID != 0 && len(set.Resources) > 1 {
+			ids := make([]int, 0, len(set.Resources))
+			for _, res := range set.Resources {
+				ids = append(ids, res.MsgID)
+			}
+			albumPath := filepath.Join(m.opts.DataDir, "exports", task.ID+".album.json")
+			if err := tdl.WriteSelectionJSON(albumPath, set.PeerID, ids); err == nil {
+				srcFile = albumPath
+				log.Printf("task %s album expanded: peer=%d messages=%d", task.ID, set.PeerID, len(ids))
+			} else {
+				log.Printf("task %s album expand failed: %v", task.ID, err)
+			}
+		}
+	}
+
+	proc, files, err := tdl.StartServe(ctx, tdl.ServeOptions{
+		TdlPath:   m.opts.TdlPath,
+		DataDir:   m.opts.TdlDataDir,
+		Namespace: m.opts.Namespace,
+		Proxy:     cfg.Proxy,
+		URL:       srcURL,
+		File:      srcFile,
+		Group:     task.Group && srcFile == "", // 清单已展开相册，仅链接来源需要 --group
+	}, onLog)
+	if err != nil {
+		m.failTask(task, r, "启动下载服务失败: "+err.Error())
+		return
+	}
+	r.fm.Lock()
+	r.serve = proc
+	r.fm.Unlock()
+	defer proc.Stop()
+	log.Printf("task %s serve ready: port=%d endpoints=%d save=%s",
+		task.ID, proc.Port(), len(files), task.SavePath)
+
+	// 过滤元数据缺失的端点（HEAD 失败的极端情况）
+	plan0 := make([]tdl.ServeFile, 0, len(files))
+	for _, f := range files {
+		if f.Name != "" {
+			plan0 = append(plan0, f)
+		}
+	}
+	if len(plan0) == 0 {
+		m.failTask(task, r, "未解析到可下载的文件（消息可能不包含媒体）")
+		return
+	}
+
+	// 重名消解：目标位置已存在同名文件（无控制文件）且大小不符时，
+	// 改用「消息ID_文件名」，避免 aria2 报 File already exists 后原地打转
+	type dlFile struct {
+		sf   tdl.ServeFile
+		name string
+	}
+	plan := make([]dlFile, 0, len(plan0))
+	var total int64
+	for _, f := range plan0 {
+		name := f.Name
+		if _, ctrlErr := os.Stat(filepath.Join(task.SavePath, name+".aria2")); ctrlErr != nil {
+			if st, err := os.Stat(filepath.Join(task.SavePath, name)); err == nil && st.Size() != f.Size {
+				name = fmt.Sprintf("%d_%s", f.MsgID, name)
+			}
+		}
+		plan = append(plan, dlFile{sf: f, name: name})
+		total += f.Size
+	}
+	// 供取消清理用：名字以最终计划名为准
+	finalFiles := make([]tdl.ServeFile, len(plan))
+	for i, p := range plan {
+		finalFiles[i] = p.sf
+		finalFiles[i].Name = p.name
+	}
+	r.fm.Lock()
+	r.serveFiles = finalFiles
+	r.fm.Unlock()
+
+	// 文件清单落任务（真实文件名+大小），保留同名旧条目 ID 减少前端抖动
+	m.mu.Lock()
+	oldByName := make(map[string]File, len(task.Files))
+	for _, of := range task.Files {
+		oldByName[of.Name] = of
+	}
+	newFiles := make([]File, 0, len(plan))
+	for _, p := range plan {
+		id := newID()
+		if of, ok := oldByName[p.name]; ok {
+			id = of.ID
+		}
+		newFiles = append(newFiles, File{ID: id, Name: p.name, Size: p.sf.Size, Status: StatusPending})
+	}
+	task.Files = newFiles
+	if total > 0 {
+		task.TotalSize = total
+	}
+	m.persistLocked()
+	m.mu.Unlock()
+
+	// onLine：记录当前文件百分比与瞬时速率（aria2 摘要行）
+	var curIdx int
+	onLine := func(line string) {
+		if p, ok := tdl.ParseAria2Line(line); ok {
+			r.fm.Lock()
+			if r.filePerc == nil {
+				r.filePerc = make(map[string]float64)
+			}
+			r.ariaPct = p.Percent
+			r.filePerc[plan[curIdx].sf.Endpoint] = p.Percent
+			if p.Speed > 0 && float64(p.Speed) > r.speed {
+				r.speed = float64(p.Speed)
+			}
+			r.fm.Unlock()
+		}
+	}
+
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	completedBytes := int64(0)
+
+	for idx := range plan {
+		p := plan[idx]
+
+		// 终止检查（暂停/取消后立即退出，保留断点）
+		select {
+		case <-r.stop:
+			close(r.stopped)
+			return
+		default:
+		}
+		m.mu.Lock()
+		if task.Status != StatusDownloading {
+			m.mu.Unlock()
+			close(r.stopped)
+			return
+		}
+		// 已完整的文件直接标记完成（重试/恢复场景秒级跳过）
+		finalPath := filepath.Join(task.SavePath, p.name)
+		if _, ctrlErr := os.Stat(finalPath + ".aria2"); ctrlErr != nil && p.sf.Size > 0 {
+			if st, err := os.Stat(finalPath); err == nil && st.Size() == p.sf.Size {
+				task.Files[idx].Status = StatusCompleted
+				task.Files[idx].Progress = 100
+				m.persistLocked()
+				m.mu.Unlock()
+				completedBytes += p.sf.Size
+				continue
+			}
+		}
+		task.Files[idx].Status = StatusDownloading
+		m.persistLocked()
+		m.mu.Unlock()
+
+		r.fm.Lock()
+		curIdx = idx
+		r.ariaPct = 0
+		r.fm.Unlock()
+
+		var lastErr error
+		var aria *tdl.RunningDownload
+		for attempt := 1; attempt <= 3; attempt++ {
+			aria, err = tdl.StartAria2(ctx, tdl.Aria2Options{
+				Aria2Path: ariaBin,
+				URL:       proc.URL(p.sf.Endpoint),
+				Dir:       task.SavePath,
+				Out:       p.name,
+			}, onLine, onLog)
 			if err != nil {
-				log.Printf("task %s start failed: %v", task.ID, err)
-				m.failTask(task, r, err.Error())
+				lastErr = err // 启动失败（路径/权限问题）重试无意义
+				break
+			}
+			r.fm.Lock()
+			r.dl = aria // 让 Pause/Cancel 能终止它
+			r.fm.Unlock()
+
+			// 等待下载完成 / 终止 / 每秒推进度
+		waitLoop:
+			for {
+				select {
+				case lastErr = <-aria.Done:
+					break waitLoop
+				case <-r.stop:
+					aria.Stop() // 优雅终止：aria2 保存 .aria2 控制文件
+					select {
+					case <-aria.Done:
+					case <-time.After(4 * time.Second):
+					}
+					lastErr = errStopped
+					break waitLoop
+				case <-tick.C:
+					m.applyServeProgress(task, r, idx, completedBytes, total)
+				}
+			}
+			r.fm.Lock()
+			r.dl = nil
+			r.fm.Unlock()
+
+			// 暂停/取消会先置任务状态再停进程：aria2 被信号终止时的退出码
+			// 不可靠（优雅退出可能送达 0），所以退出后先看任务状态，
+			// 再以磁盘实况（大小匹配且无 .aria2 控制文件）判定成败。
+			m.mu.Lock()
+			active := task.Status == StatusDownloading
+			m.mu.Unlock()
+			if lastErr == errStopped || !active {
+				close(r.stopped)
 				return
 			}
-			r.setDL(dl)
-			m.watchTask(task, r)
-		}()
-		return
-	}
+			if p.sf.Size > 0 {
+				if st, statErr := os.Stat(finalPath); statErr == nil && st.Size() == p.sf.Size {
+					if _, ctrlErr := os.Stat(finalPath + ".aria2"); ctrlErr != nil {
+						lastErr = nil // 实际已完整，忽略可疑退出码
+					}
+				} else if lastErr == nil {
+					lastErr = errors.New("aria2 提前退出，文件不完整")
+				}
+			}
 
-	log.Printf("task %s start: save=%s tdl %s", task.ID, task.SavePath,
-		strings.Join(tdl.BuildArgs(opts), " "))
-	dl, err := tdl.Start(ctx, opts, onLine, onLog)
-	if err != nil {
-		log.Printf("task %s start failed: %v", task.ID, err)
-		task.Status = StatusFailed
-		task.Error = err.Error()
-		task.FinishedAt = time.Now().UnixMilli()
-		delete(m.running, task.ID)
-		cancel()
+			if lastErr == nil {
+				break
+			}
+			log.Printf("task %s file %s aria2 attempt %d failed: %v", task.ID, p.name, attempt, lastErr)
+			select {
+			case <-r.stop:
+				lastErr = errStopped
+			case <-ctx.Done():
+				lastErr = errStopped
+			case <-time.After(2 * time.Second):
+			}
+			if lastErr == errStopped {
+				break
+			}
+		}
+
+		if lastErr == errStopped {
+			// 暂停/取消：.aria2 控制文件已保留，恢复时字节级续传
+			close(r.stopped)
+			return
+		}
+		if lastErr != nil {
+			msg := fmt.Sprintf("下载 %s 失败: %s", p.name, trimErr(lastErr))
+			if aria != nil {
+				if tail := aria.LogTail(); tail != "" {
+					msg += "（aria2: " + tail + "）"
+				}
+			}
+			m.failTask(task, r, msg)
+			return
+		}
+		completedBytes += p.sf.Size
+		m.mu.Lock()
+		task.Files[idx].Status = StatusCompleted
+		task.Files[idx].Progress = 100
+		task.Files[idx].Downloaded = p.sf.Size
 		m.persistLocked()
+		m.mu.Unlock()
+	}
+
+	// 全部完成
+	m.mu.Lock()
+	task.Status = StatusCompleted
+	task.Progress = 100
+	task.Speed = 0
+	for i := range task.Files {
+		task.Files[i].Status = StatusCompleted
+		task.Files[i].Progress = 100
+		if task.Files[i].Size > 0 {
+			task.Files[i].Downloaded = task.Files[i].Size
+		}
+	}
+	var sum int64
+	for _, f := range task.Files {
+		sum += f.Size
+	}
+	if sum > task.DownloadedSize {
+		task.DownloadedSize = sum
+	}
+	if sum > task.TotalSize {
+		task.TotalSize = sum
+	}
+	task.DownloadedSize = sum
+	task.FinishedAt = time.Now().UnixMilli()
+	delete(m.running, task.ID)
+	m.persistLocked()
+	m.pumpLocked()
+	m.mu.Unlock()
+	log.Printf("task %s completed: %d files, %d bytes", task.ID, len(plan), sum)
+	close(r.stopped)
+}
+
+// applyServeProgress 每秒由下载等待循环调用：把 aria2 当前文件进度
+// 折算成任务总进度（已完成字节 + 当前文件百分比 × 文件大小）。
+func (m *Manager) applyServeProgress(task *Task, r *runner, idx int, completedBytes, total int64) {
+	r.fm.Lock()
+	pct := r.ariaPct
+	r.fm.Unlock()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if task.Status != StatusDownloading || idx >= len(task.Files) {
 		return
 	}
-	r.setDL(dl)
+	curBytes := task.Files[idx].Size * int64(pct) / 100
+	dl := completedBytes + curBytes
+	if dl > task.DownloadedSize {
+		task.DownloadedSize = dl
+	}
+	// 速度用进度差分（aria2 的 DL 字段每秒一拍，与 tick 错拍会采到 0）
+	r.fm.Lock()
+	delta := dl - r.ariaLastDl
+	if delta < 0 {
+		delta = 0
+	}
+	r.ariaLastDl = dl
+	r.fm.Unlock()
+	task.Speed = int64(0.5*float64(task.Speed) + 0.5*float64(delta))
+	task.Files[idx].Downloaded = curBytes
+	task.Files[idx].Progress = pct
+	if total > 0 {
+		p := float64(dl) / float64(total) * 100
+		if p > 99 {
+			p = 99
+		}
+		if p < 0 {
+			p = 0
+		}
+		task.Progress = p
+	}
+	m.persistLocked()
+}
 
-	m.wg.Add(1)
-	go func() {
-		defer m.wg.Done()
-		defer cancel()
-		m.watchTask(task, r)
-	}()
+// aria2Bin 解析 aria2c 可执行文件：优先配置路径，其次 PATH。
+func (m *Manager) aria2Bin() string {
+	if m.opts.Aria2Path != "" {
+		if _, err := os.Stat(m.opts.Aria2Path); err == nil {
+			return m.opts.Aria2Path
+		}
+	}
+	if p, err := exec.LookPath("aria2c"); err == nil {
+		return p
+	}
+	return ""
+}
+
+// removeServePartials 删除 serve 下载路径的半成品与 .aria2 控制文件；
+// 已完整下载（大小匹配且无控制文件）的文件保留。
+func removeServePartials(dir string, files []tdl.ServeFile) {
+	if dir == "" {
+		return
+	}
+	for _, f := range files {
+		if f.Name == "" {
+			continue
+		}
+		fp := filepath.Join(dir, f.Name)
+		ctrl := fp + ".aria2"
+		_, ctrlErr := os.Stat(ctrl)
+		st, err := os.Stat(fp)
+		switch {
+		case ctrlErr == nil:
+			// 有控制文件 → 未完成，删除本体与控制文件
+			_ = os.Remove(fp)
+			_ = os.Remove(ctrl)
+		case err == nil && f.Size > 0 && st.Size() != f.Size:
+			// 无控制文件但大小不符（中断残留），删除
+			_ = os.Remove(fp)
+		}
+	}
 }
 
 // selectionPath 选择性下载清单的路径（与整频道导出同目录，便于统一清理）。
@@ -792,19 +1134,23 @@ func (r *runner) setExport(ex *tdl.RunningExport) {
 	r.fm.Unlock()
 }
 
-// stopProc 终止 runner 当前子进程（下载或导出）并等待其退出。
+// stopProc 终止 runner 当前子进程（aria2/下载/导出）并等待其退出，
+// 最后终止 tdl serve 进程（serve 无优雅退出需求，直接 Kill）。
 func (r *runner) stopProc() {
 	r.fm.Lock()
-	dl, ex := r.dl, r.export
+	dl, ex, serve := r.dl, r.export, r.serve
 	r.fm.Unlock()
-	switch {
-	case dl != nil:
+	if dl != nil {
 		dl.Stop()
 		select {
 		case <-dl.Done:
 		case <-time.After(6 * time.Second):
 		}
-	case ex != nil:
+	}
+	if serve != nil {
+		serve.Stop()
+	}
+	if ex != nil {
 		ex.Stop()
 		select {
 		case <-ex.Done:
