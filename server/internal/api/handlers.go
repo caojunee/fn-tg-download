@@ -163,6 +163,18 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 正有任务下载时 tdl bolt 存储锁被占，同步探测会阻塞到下载结束。
+	// 立即返回提示，用户可直接创建任务（自动排队，启动后补探测）。
+	if s.tasks.ServeBusy() {
+		results := make([]tdl.ProbeResult, len(urls))
+		tip := "有任务正在下载，暂时无法解析预览；可直接点击开始下载，新任务会自动排队"
+		for i, u := range urls {
+			results[i] = tdl.ProbeResult{URL: u, Error: tip}
+		}
+		ok(w, results)
+		return
+	}
+
 	ctx := rctx(60 * time.Second)
 	results := tdl.Probe(ctx, s.clientConfig(), urls)
 	ok(w, results)
@@ -210,7 +222,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 创建前先探测一次，填充任务名 / 类型 / 大小（失败不阻塞创建）
+	// 创建前先探测一次，填充任务名 / 类型 / 大小（失败不阻塞创建）。
+	// 正有任务下载时 tdl bolt 存储锁被占，同步探测会阻塞到下载结束
+	// （表现为前端一直转圈）——此时跳过探测，任务先入队（名称/大小
+	// 以链接占位），任务实际启动拿到锁后再补探测回填。
 	ctx := rctx(60 * time.Second)
 	urls := make([]string, 0, len(req.URLs))
 	for _, u := range req.URLs {
@@ -219,7 +234,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	probeMap := map[string]tdl.ProbeResult{}
-	if len(urls) > 0 {
+	if len(urls) > 0 && !s.tasks.ServeBusy() {
 		for _, pr := range tdl.Probe(ctx, s.clientConfig(), urls) {
 			probeMap[pr.URL] = pr
 		}

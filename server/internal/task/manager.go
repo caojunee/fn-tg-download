@@ -365,6 +365,10 @@ func (m *Manager) Pause(id string) error {
 		close(r.stop)
 		<-r.stopped
 	}
+	// 暂停释放并发槽后，拉起排队中的 pending 任务
+	m.mu.Lock()
+	m.pumpLocked()
+	m.mu.Unlock()
 	return nil
 }
 
@@ -428,6 +432,10 @@ func (m *Manager) Cancel(id string, deletePartial bool) error {
 			}
 		}
 	}
+	// 取消释放并发槽后，拉起排队中的 pending 任务
+	m.mu.Lock()
+	m.pumpLocked()
+	m.mu.Unlock()
 	return nil
 }
 
@@ -663,11 +671,15 @@ func (m *Manager) startLocked(task *Task) {
 			task.ID, task.PeerID, len(task.Selected), selPath, task.SavePath)
 	}
 
+	// 整频道链接按链接形态兜底识别：创建时若因下载占锁跳过了探测，
+	// 频道链接的 kind 会是占位的 single/album
+	_, _, isChannelLink := tdl.ChannelLink(task.URL)
+
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
 		defer cancel()
-		if srcFile == "" && task.Kind == "channel" {
+		if srcFile == "" && (task.Kind == "channel" || isChannelLink) {
 			// 整频道任务：先导出频道媒体消息清单（serve 与下载共用）
 			exportPath := m.exportPath(task.ID)
 			if !m.runChannelExport(task, r, ctx, tdl.ExportOptions{
@@ -684,6 +696,15 @@ func (m *Manager) startLocked(task *Task) {
 		}
 		m.runServeTask(task, r, ctx, srcURL, srcFile)
 	}()
+}
+
+// ServeBusy 报告 tdl bolt 存储锁是否可能被占（存在活动任务：serve 下载、
+// 频道导出或排队等待中）。期间任何 tdl 进程（探测/资源枚举等）都会在
+// flock 上阻塞，HTTP 接口必须避免在此状态下同步调用 tdl。
+func (m *Manager) ServeBusy() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.running) > 0
 }
 
 // errStopped 内部哨兵：任务被暂停/取消终止（非错误，不落失败状态）。
@@ -715,6 +736,42 @@ func (m *Manager) runServeTask(task *Task, r *runner, ctx context.Context, srcUR
 	if st != StatusDownloading {
 		close(r.stopped)
 		return
+	}
+
+	// 创建时正有任务在下载（bolt 被占）而跳过了探测的任务，在此补一次：
+	// 回填任务名/频道/类型/大小等展示信息。持锁状态下 bolt 空闲，探测
+	// 不会阻塞；探测失败不阻塞下载（私有链接属预期，tdl 下载时兜底）。
+	m.mu.Lock()
+	needProbe := task.ChatTitle == "" && len(task.Selected) == 0 && task.URL != ""
+	m.mu.Unlock()
+	if needProbe {
+		pctx, pcancel := context.WithTimeout(ctx, 60*time.Second)
+		for _, pr := range tdl.Probe(pctx, tdl.ClientConfig{
+			DataDir:   m.opts.TdlDataDir,
+			Namespace: m.opts.Namespace,
+			Proxy:     cfg.Proxy,
+			AppID:     cfg.AppID,
+			AppHash:   cfg.AppHash,
+		}, []string{task.URL}) {
+			if pr.Error != "" {
+				log.Printf("task %s late probe: %s", task.ID, pr.Error)
+				continue
+			}
+			m.mu.Lock()
+			task.ChatTitle = pr.ChatTitle
+			task.MessageID = pr.MessageID
+			task.Kind = pr.Kind
+			if pr.Title != "" {
+				task.Name = pr.Title
+			}
+			if pr.TotalSize > 0 {
+				task.TotalSize = pr.TotalSize
+			}
+			m.persistLocked()
+			m.mu.Unlock()
+			log.Printf("task %s late probe ok: kind=%s title=%s", task.ID, pr.Kind, pr.Title)
+		}
+		pcancel()
 	}
 
 	ariaBin := m.aria2Bin()
