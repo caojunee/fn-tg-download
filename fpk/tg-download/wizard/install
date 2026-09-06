@@ -93,7 +93,7 @@
                 "type": "text",
                 "field": "download_path",
                 "label": "默认下载路径",
-                "initValue": "/vol1/1000/downloads",
+                "initValue": "/vol3/1000/tg_download",
                 "rules": [
                     {
                         "required": true,
