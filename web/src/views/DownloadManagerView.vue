@@ -17,6 +17,14 @@ const speedParts = computed(() => {
   return { value: v, unit: u.join(' ') }
 })
 
+// 数值越长字号越小，保证单行放下不撑高卡片
+function valueSizeClass(s: { value: string | number; unit?: string }) {
+  const len = String(s.value).length
+  if (len >= 6) return 'is-xl'
+  if (len >= 4 || s.unit) return 'is-lg'
+  return ''
+}
+
 type StatItem = {
   key: string
   label: string
@@ -115,7 +123,7 @@ async function onResumeAll() {
       <div v-for="s in stats" :key="s.key" class="stats__item" :class="`is-${s.tone}`">
         <div class="stats__icon"><AppIcon :name="s.icon" :size="16" /></div>
         <div class="stats__body">
-          <div class="stats__value">
+          <div class="stats__value" :class="valueSizeClass(s)">
             {{ s.value }}<span v-if="s.unit" class="stats__unit">{{ s.unit }}</span>
           </div>
           <div class="stats__label">{{ s.label }}</div>
@@ -322,6 +330,18 @@ async function onResumeAll() {
     font-variant-numeric: tabular-nums;
     line-height: 1.2;
     white-space: nowrap;
+
+    /* 数值长（如 71.0 MB/s）缩小主字号，保证单行 */
+    &.is-lg {
+      font-size: 14px;
+    }
+    &.is-xl {
+      font-size: 12.5px;
+    }
+    &.is-lg .stats__unit,
+    &.is-xl .stats__unit {
+      font-size: 11px;
+    }
   }
 
   &__unit {
