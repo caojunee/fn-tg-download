@@ -1,12 +1,12 @@
 appname=tg-download
-version=0.5.0
+version=0.5.1
 display_name=TG 下载器
 desc=基于 iyear/tdl 的 Telegram 下载工具，支持相册/组合消息下载、任务进度管理与 MariaDB 持久化。
 platform=x86
 source=thirdparty
 maintainer=niubi
 distributor=niubi
-service_port=8080
+service_port=8062
 checkport=true
 os_min_version=0.9.0
 desktop_uidir=ui

@@ -1,5 +1,11 @@
 # 版本记录
 
+## v0.5.1（2026-09-06，feature/resource-picker 分支）
+
+- **下载提速（aria2 多连接）**：tdl serve 对单个 Range 请求只走一条 Telegram 拉取流（实测 ~700KB/s 稳定，波动时低至几百 KB/s），aria2c 默认单连接正好被卡死。`Aria2Args` 增加 `-x 16 -s 16 -k 4M`（16 连接分段，serve 原生支持 Range/206），实测 3MB/s+、峰值 8.9MB/s；旧 `.aria2` 控制文件对分段参数变化兼容，恢复不重下。tdl 侧加 `-t` 无增益，不采用。
+- **修复 MySQL 任务加载失败（重启后任务全丢）**：`store/mysql.go` Load() SELECT 19 列但 Scan 只接 17 个（v0.5.0 加 peer_id/selected 列时漏改），报 `expected 19 destination arguments in Scan, not 17`，整表加载失败。补扫两列并反序列化。
+- **安装向导默认值改为生产参数**：DB `192.168.31.180/td_download`、代理 `http://192.168.31.180:20172`、服务端口 8062（manifest `service_port` 同步）。升级安装保留原 `etc/env` 不受影响，仅全新安装时向导预填生产值；SIT 走手动部署不经向导。
+
 ## v0.5.0（2026-09-05，feature/resource-picker 分支）
 
 - **字节级断点续传**：下载路径重构为 `tdl dl --serve`（本地 HTTP，支持 Range/206）+ `aria2c -c`（`.aria2` 控制文件记录断点）。暂停/失败/服务重启后从断点字节处继续，不再像 tdl 内置下载器那样把半成品 `.tmp` 截断重下（tdl 续传为文件级）。

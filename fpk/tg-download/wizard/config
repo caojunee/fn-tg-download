@@ -4,13 +4,13 @@
         "items": [
             {
                 "type": "tips",
-                "helpText": "下载任务与历史将持久化到 MariaDB/MySQL。SIT 环境默认写入 test 库；生产环境请改为 td_download 库。库名留空则使用 JSON 文件兜底存储。"
+                "helpText": "下载任务与历史将持久化到 MariaDB/MySQL，默认指向生产库。库名留空则使用 JSON 文件兜底存储。"
             },
             {
                 "type": "text",
                 "field": "db_host",
                 "label": "数据库地址（IP）",
-                "initValue": "192.168.1.2",
+                "initValue": "192.168.31.180",
                 "rules": [
                     {
                         "required": true,
@@ -35,11 +35,11 @@
                 "type": "text",
                 "field": "db_name",
                 "label": "数据库名",
-                "initValue": "test",
+                "initValue": "td_download",
                 "rules": [
                     {
                         "required": true,
-                        "message": "请填写数据库名（SIT: test，生产: td_download）"
+                        "message": "请填写数据库名"
                     }
                 ]
             },
@@ -80,7 +80,7 @@
                 "type": "text",
                 "field": "app_port",
                 "label": "服务端口",
-                "initValue": "8080",
+                "initValue": "8062",
                 "rules": [
                     {
                         "required": true,
@@ -105,7 +105,7 @@
                 "type": "text",
                 "field": "proxy",
                 "label": "代理地址",
-                "initValue": "http://192.168.1.2:20172",
+                "initValue": "http://192.168.31.180:20172",
                 "rules": [
                     {
                         "pattern": "^$|^https?://\\S+$",
