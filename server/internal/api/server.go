@@ -111,17 +111,25 @@ func (s *Server) ServeStatic(mux *http.ServeMux) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if path == "/" || !strings.Contains(path[1:], "/") {
-			// 根路径或一级路径尝试静态文件，失败回退 index.html
-			target := filepath.Join(s.cfg.WebDir, filepath.Clean("/"+path))
-			if path != "/" {
-				if st, err := os.Stat(target); err == nil && !st.IsDir() {
-					http.ServeFile(w, r, target)
-					return
-				}
+			// 根路径或一级路径尝试静态文件，失败回退 index.html。
+			// index.html 不缓存：入口引用带 hash 的 chunk，发版后旧 chunk
+			// 会被删除，缓存旧入口会导致加载失败或看到旧版本。
+			if path == "/" {
+				w.Header().Set("Cache-Control", "no-cache")
+				http.ServeFile(w, r, filepath.Join(s.cfg.WebDir, "index.html"))
+				return
 			}
+			target := filepath.Join(s.cfg.WebDir, filepath.Clean("/"+path))
+			if st, err := os.Stat(target); err == nil && !st.IsDir() {
+				http.ServeFile(w, r, target)
+				return
+			}
+			w.Header().Set("Cache-Control", "no-cache")
 			http.ServeFile(w, r, filepath.Join(s.cfg.WebDir, "index.html"))
 			return
 		}
+		// 带 hash 的静态资源长缓存（内容变化时 hash 必变）
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		fs.ServeHTTP(w, r)
 	})
 }
