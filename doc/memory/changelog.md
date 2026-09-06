@@ -1,5 +1,12 @@
 # 版本记录
 
+## v0.5.2（2026-09-06，feature/resource-picker 分支）
+
+- **下载中创建任务不再阻塞（自动排队）**：tdl bolt 存储锁被下载中的 serve 独占，create/probe 接口同步探测会阻塞到下载结束（前端转圈到超时）。现在占锁期间 create 跳过探测立即入队返回（实测 0.1s），任务启动拿到锁后补一次迟到探测回填任务名/类型/大小；probe 立即返回排队提示。纯进程内队列（serveGate+并发槽），无外部依赖。
+- **修复暂停/取消后排队任务不被拉起**：Pause/Cancel 释放并发槽后补 `pumpLocked` 调度。
+- 整频道任务按链接形态（ChannelLink）兜底识别，不再依赖探测出的 kind（跳过探测时 kind 为占位值）。
+- 含 v0.5.1 全部改动：aria2 多连接提速（`-x 16 -s 16 -k 4M`，serve 单流 ~700KB/s → 3MB/s+ 峰值 8.9MB/s）、MySQL 任务加载 Scan 列数修复、安装向导默认生产参数。
+
 ## v0.5.1（2026-09-06，feature/resource-picker 分支）
 
 - **下载提速（aria2 多连接）**：tdl serve 对单个 Range 请求只走一条 Telegram 拉取流（实测 ~700KB/s 稳定，波动时低至几百 KB/s），aria2c 默认单连接正好被卡死。`Aria2Args` 增加 `-x 16 -s 16 -k 4M`（16 连接分段，serve 原生支持 Range/206），实测 3MB/s+、峰值 8.9MB/s；旧 `.aria2` 控制文件对分段参数变化兼容，恢复不重下。tdl 侧加 `-t` 无增益，不采用。
