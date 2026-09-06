@@ -769,10 +769,30 @@ func (m *Manager) runServeTask(task *Task, r *runner, ctx context.Context, srcUR
 			}
 			m.persistLocked()
 			m.mu.Unlock()
-			log.Printf("task %s late probe ok: kind=%s title=%s", task.ID, pr.Kind, pr.Title)
+			log.Printf("task %s late probe ok: kind=%s title=%s save=%s",
+				task.ID, pr.Kind, pr.Title, task.SavePath)
 		}
 		pcancel()
 	}
+
+	// 保存目录对齐：创建时因占锁跳过探测（或旧版本探测未纠正目录）的
+	// 任务，子目录可能是链接回退名（如频道 username），与磁盘上已有
+	// 断点文件的频道名目录对不上。这里统一按频道名纠正；目录非空
+	// （已开始下载）则不动。
+	m.mu.Lock()
+	if task.ChatTitle != "" {
+		if sub := tdl.DirNameForURL(task.URL, task.ChatTitle); sub != "" {
+			newPath := filepath.Join(filepath.Dir(task.SavePath), sub)
+			if newPath != task.SavePath {
+				if ents, e := os.ReadDir(task.SavePath); e != nil || len(ents) == 0 {
+					log.Printf("task %s save path realigned: %s -> %s", task.ID, task.SavePath, newPath)
+					task.SavePath = newPath
+					m.persistLocked()
+				}
+			}
+		}
+	}
+	m.mu.Unlock()
 
 	ariaBin := m.aria2Bin()
 	if ariaBin == "" {

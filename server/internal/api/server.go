@@ -31,11 +31,15 @@ type Server struct {
 	// 资源清单缓存：url → 最近一次枚举结果，用于创建任务时
 	// 回填选中项的文件名与大小（枚举成本高，不重复拉取）
 	resCache *resourceCache
+
+	// 登录信息缓存：下载占锁期间 /api/auth/me 直接回缓存（见 me.go）
+	me *meCache
 }
 
 // New 创建 Server。
 func New(cfg config.Config, st *settings.Store, tm *task.Manager) *Server {
-	return &Server{cfg: cfg, settings: st, tasks: tm, resCache: newResourceCache()}
+	return &Server{cfg: cfg, settings: st, tasks: tm,
+		resCache: newResourceCache(), me: newMeCache(cfg.DataDir)}
 }
 
 // ---- 统一响应 {code, message, data} ----

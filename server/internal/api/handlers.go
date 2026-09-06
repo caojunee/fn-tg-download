@@ -91,23 +91,42 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.loginMu.Lock()
 	s.flow = nil
 	s.loginMu.Unlock()
+	s.me.save(info) // 登录成功即写入缓存，避免下次 auth/me 再起客户端实测
 	ok(w, info)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
-	if err := tdl.ClearSession(rctx(5*time.Second), s.cfg.TdlDataDir, s.cfg.Namespace); err != nil {
+	// 退出登录要删 bolt 里的 session 键，下载占锁期间会阻塞
+	if s.tasks.ServeBusy() {
+		fail(w, codeBizErr, "有任务正在下载，请先暂停或等待完成后再退出登录")
+		return
+	}
+	err := tdl.ClearSession(rctx(5*time.Second), s.cfg.TdlDataDir, s.cfg.Namespace)
+	if err != nil {
 		fail(w, codeBizErr, "退出登录失败: "+err.Error())
 		return
 	}
+	s.me.clear()
 	ok(w, true)
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, _ *http.Request) {
+	// 下载占锁期间（bolt 被 serve 独占）实测会阻塞到下载结束，
+	// 直接回缓存；无缓存的极端情况回落实测（有 20s 超时兜底）。
+	if s.tasks.ServeBusy() {
+		if info := s.me.load(); info != nil {
+			ok(w, info)
+			return
+		}
+	}
+
+	// 不占锁时照旧实测：会话被远端吊销、换号等靠这里纠偏并刷新缓存
 	ctx := rctx(20 * time.Second)
 	cfg := s.clientConfig()
 
 	has, err := tdl.HasSession(ctx, cfg.DataDir, cfg.Namespace)
 	if err == nil && !has {
+		s.me.clear()
 		fail(w, codeBizErr, "not logged in")
 		return
 	}
@@ -116,6 +135,7 @@ func (s *Server) handleMe(w http.ResponseWriter, _ *http.Request) {
 		fail(w, codeBizErr, "not logged in")
 		return
 	}
+	s.me.save(info)
 	ok(w, info)
 }
 
