@@ -11,11 +11,27 @@ const download = useDownloadStore()
 const tab = ref(0)
 const isMobile = useIsMobile()
 
-const stats = computed(() => [
+// 速率值拆成数值+单位渲染（单位小号），避免长值换行撑高卡片
+const speedParts = computed(() => {
+  const [v, ...u] = formatSpeed(download.totalSpeed).split(' ')
+  return { value: v, unit: u.join(' ') }
+})
+
+type StatItem = {
+  key: string
+  label: string
+  value: string | number
+  unit?: string
+  icon: string
+  tone: string
+}
+
+const stats = computed<StatItem[]>(() => [
   {
     key: 'speed',
     label: '总下载速率',
-    value: formatSpeed(download.totalSpeed),
+    value: speedParts.value.value,
+    unit: speedParts.value.unit,
     icon: 'zap',
     tone: 'primary',
   },
@@ -99,7 +115,9 @@ async function onResumeAll() {
       <div v-for="s in stats" :key="s.key" class="stats__item" :class="`is-${s.tone}`">
         <div class="stats__icon"><AppIcon :name="s.icon" :size="16" /></div>
         <div class="stats__body">
-          <div class="stats__value">{{ s.value }}</div>
+          <div class="stats__value">
+            {{ s.value }}<span v-if="s.unit" class="stats__unit">{{ s.unit }}</span>
+          </div>
           <div class="stats__label">{{ s.label }}</div>
         </div>
       </div>
@@ -250,12 +268,14 @@ async function onResumeAll() {
 .stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-auto-rows: 1fr; /* 同行卡片强制等高 */
   gap: 12px;
 
   &__item {
     display: flex;
     gap: 11px;
     align-items: center;
+    min-width: 0;
     padding: 14px 16px;
     background: $color-bg-card;
     border: 1px solid $color-border;
@@ -291,17 +311,31 @@ async function onResumeAll() {
     border-radius: 9px;
   }
 
+  &__body {
+    flex: 1;
+    min-width: 0;
+  }
+
   &__value {
     font-size: 18px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  &__unit {
+    margin-left: 2px;
+    font-size: 12px;
+    font-weight: 500;
+    color: $color-text-secondary;
   }
 
   &__label {
     margin-top: 2px;
     font-size: 11.5px;
     color: $color-text-placeholder;
+    white-space: nowrap;
   }
 }
 
