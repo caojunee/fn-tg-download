@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -58,6 +60,18 @@ func NewMySQL(dsn string) (task.Persister, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate columns: %w", err)
 	}
+	// 链接台账：每条 URL 最近一次任务的快照，用于解析链接时提示"已下载过"。
+	// 独立于 tasks 表，清空历史不会删除，跨会话可查。
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS download_urls (
+		url         VARCHAR(768) NOT NULL PRIMARY KEY,
+		status      VARCHAR(16)  NOT NULL DEFAULT '',
+		name        VARCHAR(512) NOT NULL DEFAULT '',
+		finished_at BIGINT       NOT NULL DEFAULT 0,
+		updated_at  BIGINT       NOT NULL DEFAULT 0
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate download_urls: %w", err)
+	}
 	return &mysqlStore{db: db}, nil
 }
 
@@ -109,6 +123,65 @@ const upsertSQL = `INSERT INTO tasks
 		finished_at=VALUES(finished_at), error=VALUES(error), files=VALUES(files),
 		peer_id=VALUES(peer_id), selected=VALUES(selected)`
 
+const upsertURLSQL = `INSERT INTO download_urls (url, status, name, finished_at, updated_at)
+	VALUES (?,?,?,?,?)
+	ON DUPLICATE KEY UPDATE
+		status      = IF(download_urls.status = 'completed' AND VALUES(status) <> 'completed', download_urls.status, VALUES(status)),
+		name        = IF(download_urls.status = 'completed' AND VALUES(status) <> 'completed', download_urls.name, VALUES(name)),
+		finished_at = IF(download_urls.status = 'completed' AND VALUES(status) <> 'completed', download_urls.finished_at, VALUES(finished_at)),
+		updated_at  = VALUES(updated_at)`
+
+// UpsertURLs 同步链接台账：每条任务 URL 记录最近一次状态快照。
+// 已是 completed 的记录不被非 completed 状态覆盖（下载过的链接始终显示"已下载"）。
+func (s *mysqlStore) UpsertURLs(tasks []*task.Task) {
+	now := time.Now().Unix()
+	stmt, err := s.db.Prepare(upsertURLSQL)
+	if err != nil {
+		log.Printf("upsert urls prepare: %v", err)
+		return
+	}
+	defer stmt.Close()
+	for _, t := range tasks {
+		if t.URL == "" {
+			continue
+		}
+		fin := t.FinishedAt
+		if fin == 0 {
+			fin = now
+		}
+		if _, err := stmt.Exec(t.URL, string(t.Status), t.Name, fin, now); err != nil {
+			log.Printf("upsert url %s: %v", t.URL, err)
+		}
+	}
+}
+
+// LookupURLs 批量查询链接台账，返回 url → 台账项；查不到的 url 不在 map 中。
+func (s *mysqlStore) LookupURLs(urls []string) (map[string]task.URLEntry, error) {
+	out := make(map[string]task.URLEntry, len(urls))
+	if len(urls) == 0 {
+		return out, nil
+	}
+	stmt := `SELECT url, status, name, finished_at FROM download_urls WHERE url IN (` +
+		strings.Repeat("?,", len(urls)-1) + `?)`
+	args := make([]any, len(urls))
+	for i, u := range urls {
+		args[i] = u
+	}
+	rows, err := s.db.Query(stmt, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e task.URLEntry
+		if err := rows.Scan(&e.URL, &e.Status, &e.Name, &e.FinishedAt); err != nil {
+			return out, err
+		}
+		out[e.URL] = e
+	}
+	return out, rows.Err()
+}
+
 func (s *mysqlStore) Save(tasks []*task.Task) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -149,7 +222,12 @@ func (s *mysqlStore) Save(tasks []*task.Task) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// 同步链接台账（失败不影响任务持久化）
+	s.UpsertURLs(tasks)
+	return nil
 }
 
 func (s *mysqlStore) Load() ([]*task.Task, error) {

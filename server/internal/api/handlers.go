@@ -231,6 +231,30 @@ func splitCSV(s string) []string {
 	return out
 }
 
+// handleURLLookup 批量查询链接台账：POST {urls:[...]} → [{url,status,name,finishedAt}]。
+// 前端解析链接后调用，提示"已下载过/下载中"等，防止重复操作。
+func (s *Server) handleURLLookup(w http.ResponseWriter, r *http.Request) {
+	req, err := body[struct {
+		URLs []string `json:"urls"`
+	}](r)
+	if err != nil {
+		fail(w, codeBizErr, "参数错误")
+		return
+	}
+	urls := make([]string, 0, len(req.URLs))
+	for _, u := range req.URLs {
+		if u = strings.TrimSpace(u); u != "" {
+			urls = append(urls, u)
+		}
+	}
+	entries := s.tasks.LookupURLs(urls)
+	out := make([]task.URLEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e)
+	}
+	ok(w, out)
+}
+
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	req, err := body[createReq](r)
 	if err != nil {

@@ -81,6 +81,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 
 	// 下载
 	mux.HandleFunc("POST /api/download/probe", s.handleProbe)
+	mux.HandleFunc("POST /api/download/urls/lookup", s.handleURLLookup)
 	mux.HandleFunc("POST /api/download/create", s.handleCreate)
 	mux.HandleFunc("GET /api/download/tasks", s.handleListTasks)
 	mux.HandleFunc("POST /api/download/history/clear", s.handleClearHistory)

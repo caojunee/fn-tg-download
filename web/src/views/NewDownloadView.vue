@@ -5,8 +5,8 @@ import { showSuccessToast, showToast } from 'vant'
 import AppIcon from '@/components/AppIcon.vue'
 import DirPicker from '@/components/DirPicker.vue'
 import ResourcePicker from '@/components/ResourcePicker.vue'
-import { probe } from '@/api/download'
-import type { ProbeResult } from '@/api/download'
+import { probe, lookupUrls } from '@/api/download'
+import type { ProbeResult, UrlLedgerEntry } from '@/api/download'
 import type { DownloadSelection } from '@/types'
 import { useDownloadStore } from '@/stores/download'
 import { useSettingsStore } from '@/stores/settings'
@@ -131,10 +131,40 @@ async function onProbe() {
     results.value = await probe(urlList.value)
     probed.value = true
     if (!results.value.length) showToast('未解析到可下载的内容')
+    // 查链接台账（后端持久化，清历史/重开页面仍可查），标记已下载过的链接
+    if (results.value.length) {
+      lookupUrls(results.value.map((r) => r.url)).then((entries) => {
+        const map: Record<string, UrlLedgerEntry> = {}
+        for (const e of entries) map[e.url] = e
+        ledger.value = map
+      })
+    }
   } finally {
     probing.value = false
   }
 }
+
+/** 链接台账：url → 最近一次任务快照（后端持久化，跨会话可查） */
+const ledger = ref<Record<string, UrlLedgerEntry>>({})
+const LEDGER_TEXT: Record<string, string> = {
+  completed: '已下载',
+  downloading: '下载中',
+  pending: '排队中',
+  paused: '已暂停',
+  failed: '失败过',
+  canceled: '已取消',
+}
+function ledgerStatus(url: string): string {
+  return ledger.value[url]?.status || ''
+}
+function ledgerText(url: string): string {
+  const s = ledgerStatus(url)
+  return s ? (LEDGER_TEXT[s] || '已存在') : ''
+}
+/** 已存在于任务列表（任意状态）的解析结果数 */
+const ledgerCount = computed(
+  () => results.value.filter((r) => ledgerStatus(r.url)).length,
+)
 
 function removeResult(index: number) {
   const [item] = results.value.splice(index, 1)
@@ -243,6 +273,9 @@ async function onStart() {
               <span v-if="privateCount" class="new__album-tip">
                 其中 {{ privateCount }} 条私有链接启动后统计
               </span>
+              <span v-if="ledgerCount" class="new__album-tip new__ledger-tip">
+                {{ ledgerCount }} 条链接已在任务列表（{{ results.length - ledgerCount }} 条未下载）
+              </span>
               <span v-if="pickedCount" class="new__album-tip">
                 已手动选择 {{ pickedCount }} 条链接的下载范围
               </span>
@@ -269,7 +302,14 @@ async function onStart() {
                   </template>
                 </div>
               </div>
-              <span v-if="item.kind === 'channel'" class="probe__badge"> 整频道下载 </span>
+              <span
+                v-if="ledgerStatus(item.url)"
+                class="probe__badge"
+                :class="`probe__badge--${ledgerStatus(item.url)}`"
+              >
+                {{ ledgerText(item.url) }}
+              </span>
+              <span v-else-if="item.kind === 'channel'" class="probe__badge"> 整频道下载 </span>
               <span v-else-if="item.error && isPrivateUrl(item.url)" class="probe__badge"> 私有链接 </span>
               <span v-else-if="item.kind !== 'single'" class="probe__badge"> 相册 / 组合消息 </span>
               <span
@@ -466,6 +506,12 @@ async function onStart() {
     border-radius: 999px;
   }
 
+  /* 台账汇总：绿色（已完成）而非蓝色，与"检测到相册"等提示区分 */
+  &__ledger-tip {
+    color: $color-success;
+    background: rgba(34, 197, 94, 0.12);
+  }
+
   &__results {
     display: flex;
     flex-direction: column;
@@ -562,6 +608,26 @@ async function onStart() {
     color: $color-primary;
     background: $color-primary-light;
     border-radius: 999px;
+
+    /* 链接台账状态：一眼区分下载过没 */
+    &--completed {
+      color: $color-success;
+      background: rgba(34, 197, 94, 0.12);
+    }
+    &--downloading,
+    &--pending {
+      color: $color-primary;
+      background: $color-primary-light;
+    }
+    &--paused {
+      color: $color-warning;
+      background: rgba(245, 158, 11, 0.14);
+    }
+    &--failed,
+    &--canceled {
+      color: $color-text-secondary;
+      background: $color-bg;
+    }
   }
 
   &__pick {

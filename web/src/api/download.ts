@@ -23,6 +23,24 @@ export async function probe(urls: string[]): Promise<ProbeResult[]> {
   return httpPost<ProbeResult[]>('/download/probe', { urls })
 }
 
+/** 链接台账项：该 URL 最近一次任务的快照（持久化，清历史不丢） */
+export interface UrlLedgerEntry {
+  url: string
+  status: string
+  name: string
+  finishedAt: number
+}
+
+/** 批量查询链接是否已建过任务（后端持久化，跨会话可查） */
+export async function lookupUrls(urls: string[]): Promise<UrlLedgerEntry[]> {
+  if (USE_MOCK) return []
+  try {
+    return await httpPost<UrlLedgerEntry[]>('/download/urls/lookup', { urls })
+  } catch {
+    return [] // 台账查询失败不阻塞解析流程
+  }
+}
+
 export async function createDownload(payload: CreateDownloadPayload): Promise<DownloadTask[]> {
   if (USE_MOCK)
     return (await mock()).mockApi.createDownload({

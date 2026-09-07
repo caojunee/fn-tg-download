@@ -90,6 +90,11 @@ func (m *Manager) Load() error {
 		}
 	}
 	m.tasks = tasks
+	// 重启后的状态快照落库（active→paused 的变化），同时让链接台账
+	// 覆盖到全部历史任务——否则台账要等下一次状态变化才有数据
+	if len(tasks) > 0 {
+		_ = m.opts.Persist.Save(m.tasks)
+	}
 	return nil
 }
 
@@ -705,6 +710,22 @@ func (m *Manager) ServeBusy() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.running) > 0
+}
+
+// LookupURLs 批量查询链接台账（URL → 最近一次任务快照）。
+// 持久化实现不支持台账（JSON 兜底）时返回空 map。
+func (m *Manager) LookupURLs(urls []string) map[string]URLEntry {
+	led, ok := m.opts.Persist.(urlLedger)
+	if !ok {
+		log.Printf("lookup urls: persister %T does not support url ledger", m.opts.Persist)
+		return map[string]URLEntry{}
+	}
+	out, err := led.LookupURLs(urls)
+	if err != nil {
+		log.Printf("lookup urls: %v", err)
+		return map[string]URLEntry{}
+	}
+	return out
 }
 
 // errStopped 内部哨兵：任务被暂停/取消终止（非错误，不落失败状态）。

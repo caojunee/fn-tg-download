@@ -59,3 +59,17 @@ func (p *jsonPersister) Save(tasks []*Task) error {
 func (p *jsonPersister) Delete([]string) error { return nil }
 
 func (p *jsonPersister) DeleteFinished() error { return nil }
+
+// URLEntry 链接台账项：一条 URL 最近一次任务的快照（持久化于 download_urls 表，
+// 不随清历史删除），用于解析链接时提示"已下载过"。
+type URLEntry struct {
+	URL        string `json:"url"`
+	Status     string `json:"status"`
+	Name       string `json:"name"`
+	FinishedAt int64  `json:"finishedAt"`
+}
+
+// urlLedger 支持链接台账的持久化实现（MySQL）；JSON 兜底实现不支持，返回 false。
+type urlLedger interface {
+	LookupURLs(urls []string) (map[string]URLEntry, error)
+}
