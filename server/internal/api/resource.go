@@ -92,7 +92,17 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := rctx(5 * time.Minute)
-	set := tdl.ListResources(ctx, s.clientConfig(), req.URL)
+	cfg := s.clientConfig()
+	// 下载占锁期间用存储副本枚举资源（副本不可用则回退原行为）
+	if s.tasks.ServeBusy() {
+		if cpCfg, cleanup, err := tdl.TempStorage(cfg); err == nil {
+			defer cleanup()
+			cfg = cpCfg
+		} else {
+			log.Printf("resource list on temp storage failed, fallback: %v", err)
+		}
+	}
+	set := tdl.ListResources(ctx, cfg, req.URL)
 	if set.Error == "" && len(set.Resources) > 0 {
 		s.resCache.put(set.URL, set)
 		log.Printf("resource list: %s -> %d items (peer=%d kind=%s)",
@@ -124,7 +134,15 @@ func (s *Server) handleResourceThumb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := rctx(60 * time.Second)
-	data, ct, err := tdl.FetchThumb(ctx, s.clientConfig(), s.cfg.DataDir, tdl.ThumbOptions{
+	thumbCfg := s.clientConfig()
+	// 下载占锁期间用存储副本取缩略图（副本不可用则回退原行为）
+	if s.tasks.ServeBusy() {
+		if cpCfg, cleanup, err := tdl.TempStorage(thumbCfg); err == nil {
+			defer cleanup()
+			thumbCfg = cpCfg
+		}
+	}
+	data, ct, err := tdl.FetchThumb(ctx, thumbCfg, s.cfg.DataDir, tdl.ThumbOptions{
 		URL:    raw,
 		Key:    key,
 		PeerID: peerID,

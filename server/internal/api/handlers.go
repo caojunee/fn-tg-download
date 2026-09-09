@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"log"
+
 	"tg-download/internal/settings"
 	"tg-download/internal/task"
 	"tg-download/internal/tdl"
@@ -183,20 +185,20 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 正有任务下载时 tdl bolt 存储锁被占，同步探测会阻塞到下载结束。
-	// 立即返回提示，用户可直接创建任务（自动排队，启动后补探测）。
+	cfg := s.clientConfig()
+	// 正有任务下载时 tdl bolt 存储锁被占：改用存储副本探测（秒级、不影响
+	// 下载），副本不可用时回退原行为。不占锁时直接实测并刷新登录缓存。
 	if s.tasks.ServeBusy() {
-		results := make([]tdl.ProbeResult, len(urls))
-		tip := "有任务正在下载，暂时无法解析预览；可直接点击开始下载，新任务会自动排队"
-		for i, u := range urls {
-			results[i] = tdl.ProbeResult{URL: u, Error: tip}
+		if cpCfg, cleanup, err := tdl.TempStorage(cfg); err == nil {
+			defer cleanup()
+			cfg = cpCfg
+		} else {
+			log.Printf("probe on temp storage failed, fallback: %v", err)
 		}
-		ok(w, results)
-		return
 	}
 
 	ctx := rctx(60 * time.Second)
-	results := tdl.Probe(ctx, s.clientConfig(), urls)
+	results := tdl.Probe(ctx, cfg, urls)
 	ok(w, results)
 }
 
