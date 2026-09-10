@@ -47,6 +47,8 @@ const pickerShow = ref(false)
 /** 资源选择器状态 */
 const resourceShow = ref(false)
 const resourceUrl = ref('')
+/** 「下载选中」直接建任务：提交中（按钮 loading + 期间不允许关闭弹窗） */
+const resourceSubmitting = ref(false)
 /** 链接 → 用户勾选的范围（含总大小，仅用于界面统计） */
 interface SelectionState extends DownloadSelection {
   totalSize: number
@@ -61,8 +63,69 @@ function openResources(item: ProbeResult) {
   resourceShow.value = true
 }
 
-function onPicked(url: string, sel: DownloadSelection & { totalSize: number }) {
+/** 已登录校验：未登录时提示并跳转登录页 */
+function ensureLogged(): boolean {
+  if (!user.logged) {
+    showToast('请先登录 Telegram 账号')
+    router.push({ name: 'login' })
+    return false
+  }
+  return true
+}
+
+/** 组装一次创建请求的参数（保存路径 / 并发 / 过滤等取自右侧下载选项） */
+function createPayload(urls: string[], selected?: Record<string, DownloadSelection>) {
+  return {
+    urls,
+    group: withGroup.value,
+    savePath: savePath.value,
+    concurrency: concurrency.value,
+    include: includeExt.value || undefined,
+    exclude: excludeExt.value || undefined,
+    selected,
+  }
+}
+
+/**
+ * 立即下载后把该链接从待下载列表（输入框 + 解析结果）里摘掉。
+ * 否则再点「开始下载」会重复创建同一个任务。
+ */
+function dropUrl(url: string) {
+  rawUrls.value = urlList.value.filter((u) => u !== url).join('\n')
+  results.value = results.value.filter((r) => r.url !== url)
+  const next = { ...selections.value }
+  delete next[url]
+  selections.value = next
+  if (!results.value.length) {
+    probed.value = false
+    rawUrls.value = ''
+  }
+}
+
+/**
+ * 资源选择器点「下载选中」：直接创建任务开始下载，不用再回页面点「开始下载」。
+ * 失败时保持弹窗与已选范围，便于重试或改用「开始下载」。
+ */
+async function onPicked(url: string, sel: DownloadSelection & { totalSize: number }) {
+  if (resourceSubmitting.value) return
+  if (!ensureLogged()) return
+  // 先记下勾选范围：创建失败时列表里仍显示"已选 N 个"，可改用「开始下载」兜底
   selections.value = { ...selections.value, [url]: { ...sel } }
+  resourceSubmitting.value = true
+  try {
+    const created = await download.create(
+      createPayload([url], { [url]: { peerId: sel.peerId, msgIds: sel.msgIds } }),
+    )
+    resourceShow.value = false
+    const empty = results.value.length <= 1
+    dropUrl(url)
+    showSuccessToast(created.length ? `已开始下载 ${created.length} 个任务` : '已开始下载')
+    if (empty) router.push({ name: 'tasks' })
+  } catch {
+    /* 具体错误已由请求层统一 toast，这里保留弹窗与勾选便于重试 */
+  } finally {
+    resourceSubmitting.value = false
+  }
 }
 
 /** 已手动勾选下载范围的链接数 */
@@ -176,20 +239,10 @@ async function onStart() {
     showToast('请先输入链接')
     return
   }
-  if (!user.logged) {
-    showToast('请先登录 Telegram 账号')
-    router.push({ name: 'login' })
-    return
-  }
-  const created = await download.create({
-    urls: urlList.value,
-    group: withGroup.value,
-    savePath: savePath.value,
-    concurrency: concurrency.value,
-    include: includeExt.value || undefined,
-    exclude: excludeExt.value || undefined,
-    selected: pickedCount.value ? selections.value : undefined,
-  })
+  if (!ensureLogged()) return
+  const created = await download.create(
+    createPayload(urlList.value, pickedCount.value ? selections.value : undefined),
+  )
   showSuccessToast(`已创建 ${created.length} 个下载任务`)
   rawUrls.value = ''
   results.value = []
@@ -395,10 +448,11 @@ async function onStart() {
       </div>
     </div>
 
-    <!-- 资源选择器：解析后按链接选择部分资源下载 -->
+    <!-- 资源选择器：解析后按链接选择部分资源，点「下载选中」即直接开始下载 -->
     <ResourcePicker
       v-model:show="resourceShow"
       :url="resourceUrl"
+      :busy="resourceSubmitting"
       @confirm="(sel) => onPicked(resourceUrl, sel)"
     />
   </div>

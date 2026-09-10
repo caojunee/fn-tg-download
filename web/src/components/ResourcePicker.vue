@@ -11,6 +11,8 @@ const props = defineProps<{
   show: boolean
   /** 要枚举的链接（整频道 / 相册 / 单条） */
   url: string
+  /** 父组件正在用当前勾选创建任务（「下载选中」= 立即下载） */
+  busy?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -97,10 +99,21 @@ function onThumbError(key: string) {
 }
 
 function close() {
+  if (props.busy) return // 建任务中，避免中途关闭丢失已选范围
   emit('update:show', false)
 }
 
+function onShowChange(v: boolean) {
+  if (!v && props.busy) return
+  emit('update:show', v)
+}
+
+/**
+ * 「下载选中」= 立即下载：把勾选范围交给父组件直接创建任务开始下载。
+ * 弹窗不在这里关闭——创建成功后由父组件关闭；失败则保留弹窗与勾选以便重试。
+ */
 function confirm() {
+  if (props.busy) return
   if (!set.value || selectedCount.value === 0) {
     showToast('请至少选择一个资源')
     return
@@ -110,7 +123,6 @@ function confirm() {
     .filter((r) => picked.value.has(r.msgId))
     .map((r) => r.msgId)
   emit('confirm', { peerId: set.value.peerId, msgIds, totalSize: selectedSize.value })
-  close()
 }
 
 const kindIcon = (kind: string) =>
@@ -126,7 +138,7 @@ const FILTERS: { key: 'all' | 'video' | 'photo' | 'other'; label: string }[] = [
 
 <template>
   <!-- 桌面居中弹窗 / 移动端上拉抽屉，容器内按平台懒加载 -->
-  <ResponsivePopup :show="show" @update:show="(v: boolean) => emit('update:show', v)">
+  <ResponsivePopup :show="show" @update:show="onShowChange">
     <div class="picker">
       <div class="picker__head">
         <div class="picker__title">
@@ -210,10 +222,17 @@ const FILTERS: { key: 'all' | 'video' | 'photo' | 'other'; label: string }[] = [
         <div class="picker__foot">
           <div class="picker__sum">
             已选 <b>{{ selectedCount }}</b> 个 · {{ formatSize(selectedSize) }}
+            <div class="picker__sum-tip">点「下载选中」将立即创建任务并开始下载</div>
           </div>
           <div class="picker__btns">
-            <van-button plain @click="close">取消</van-button>
-            <van-button type="primary" :disabled="!selectedCount" @click="confirm">
+            <van-button plain :disabled="busy" @click="close">取消</van-button>
+            <van-button
+              type="primary"
+              :loading="busy"
+              loading-text="正在创建…"
+              :disabled="!selectedCount || busy"
+              @click="confirm"
+            >
               下载选中{{ selectedCount ? `（${selectedCount}）` : '' }}
             </van-button>
           </div>
@@ -376,6 +395,12 @@ const FILTERS: { key: 'all' | 'video' | 'photo' | 'other'; label: string }[] = [
     b {
       color: $color-primary;
     }
+  }
+
+  &__sum-tip {
+    margin-top: 3px;
+    font-size: 11.5px;
+    color: $color-text-placeholder;
   }
 
   &__btns {
