@@ -61,7 +61,8 @@ func NewMySQL(dsn string) (task.Persister, error) {
 		return nil, fmt.Errorf("migrate columns: %w", err)
 	}
 	// 链接台账：每条 URL 最近一次任务的快照，用于解析链接时提示"已下载过"。
-	// 独立于 tasks 表，清空历史不会删除，跨会话可查。
+	// 独立于 tasks 表（跨会话 / 重开页面可查），但生命周期跟随任务记录：
+	// 删除历史任务或清空历史时同步删除对应行，避免"已下载"标记残留。
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS download_urls (
 		url         VARCHAR(768) NOT NULL PRIMARY KEY,
 		status      VARCHAR(16)  NOT NULL DEFAULT '',
@@ -153,6 +154,48 @@ func (s *mysqlStore) UpsertURLs(tasks []*task.Task) {
 			log.Printf("upsert url %s: %v", t.URL, err)
 		}
 	}
+}
+
+// DeleteURLs 从链接台账删除指定 URL，返回删除行数。
+// 由清空历史 / 删除历史任务调用，让"已下载"标记与任务列表保持一致
+// （不删的话，清空历史后重新解析链接仍会显示"已下载"）。
+func (s *mysqlStore) DeleteURLs(urls []string) (int64, error) {
+	if len(urls) == 0 {
+		return 0, nil
+	}
+	stmt := `DELETE FROM download_urls WHERE url IN (` + strings.Repeat("?,", len(urls)-1) + `?)`
+	args := make([]any, len(urls))
+	for i, u := range urls {
+		args[i] = u
+	}
+	res, err := s.db.Exec(stmt, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteURLsExcept 清空台账中除 keep 之外的全部记录，返回删除行数。
+// "清空下载历史"用它：历史清掉后不该再有"已下载"标记残留，只保留仍在
+// 下载/暂停的活跃任务对应的 URL。
+func (s *mysqlStore) DeleteURLsExcept(keep []string) (int64, error) {
+	if len(keep) == 0 {
+		res, err := s.db.Exec(`DELETE FROM download_urls`)
+		if err != nil {
+			return 0, err
+		}
+		return res.RowsAffected()
+	}
+	stmt := `DELETE FROM download_urls WHERE url NOT IN (` + strings.Repeat("?,", len(keep)-1) + `?)`
+	args := make([]any, len(keep))
+	for i, u := range keep {
+		args[i] = u
+	}
+	res, err := s.db.Exec(stmt, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // LookupURLs 批量查询链接台账，返回 url → 台账项；查不到的 url 不在 map 中。

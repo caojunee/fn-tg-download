@@ -566,8 +566,10 @@ func (m *Manager) Remove(ids []string) error {
 	}
 	kept := m.tasks[:0]
 	var removed []string
+	var gone []*Task
 	for _, t := range m.tasks {
 		if rm[t.ID] && !t.Status.Active() {
+			gone = append(gone, t)
 			removed = append(removed, t.ID)
 			continue
 		}
@@ -577,10 +579,69 @@ func (m *Manager) Remove(ids []string) error {
 	if err := m.opts.Persist.Delete(removed); err != nil {
 		return err
 	}
+	m.forgetURLsLocked(gone)
 	for _, id := range removed {
 		_ = os.Remove(m.exportPath(id))
 	}
 	return nil
+}
+
+// forgetURLsLocked 把刚删掉的历史任务从链接台账里一并清掉（调用方须持有 m.mu，
+// 且已把任务从 m.tasks 移除）。仍被保留任务引用的 URL 不动，避免误删活跃任务
+// 的"下载中"标记。
+func (m *Manager) forgetURLsLocked(removed []*Task) {
+	if len(removed) == 0 {
+		return
+	}
+	led, ok := m.opts.Persist.(urlLedger)
+	if !ok {
+		return
+	}
+	alive := make(map[string]bool, len(m.tasks))
+	for _, t := range m.tasks {
+		if t.URL != "" {
+			alive[t.URL] = true
+		}
+	}
+	seen := make(map[string]bool, len(removed))
+	urls := make([]string, 0, len(removed))
+	for _, t := range removed {
+		if t.URL == "" || alive[t.URL] || seen[t.URL] {
+			continue
+		}
+		seen[t.URL] = true
+		urls = append(urls, t.URL)
+	}
+	if len(urls) == 0 {
+		return
+	}
+	n, err := led.DeleteURLs(urls)
+	if err != nil {
+		log.Printf("清理链接台账失败: %v", err)
+		return
+	}
+	log.Printf("链接台账已同步清理 %d 行（URL %d 条）", n, len(urls))
+}
+
+// forgetAllURLsLocked 清空链接台账（保留活跃任务仍在用的 URL），调用方须持有 m.mu。
+// "清空下载历史"走这里：历史清空后不该再有"已下载"标记残留。
+func (m *Manager) forgetAllURLsLocked() {
+	led, ok := m.opts.Persist.(urlLedger)
+	if !ok {
+		return
+	}
+	keep := make([]string, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		if t.URL != "" {
+			keep = append(keep, t.URL)
+		}
+	}
+	n, err := led.DeleteURLsExcept(keep)
+	if err != nil {
+		log.Printf("清空链接台账失败: %v", err)
+		return
+	}
+	log.Printf("链接台账已清空 %d 行（保留活跃任务 URL %d 条）", n, len(keep))
 }
 
 // ClearHistory 清空非活跃任务记录。
@@ -598,6 +659,10 @@ func (m *Manager) ClearHistory() error {
 	if err := m.opts.Persist.DeleteFinished(); err != nil {
 		return err
 	}
+	// 台账同步清空：否则清空历史后重新解析链接仍显示"已下载"。
+	// 用"清空 + 保留活跃 URL"而不是逐条删 gone 的 URL——历史里没有对应任务
+	// 记录的老台账（如本次修复前遗留的）也要一并清掉。
+	m.forgetAllURLsLocked()
 	// 清理所有已不在列表中的整频道导出文件
 	entries, _ := os.ReadDir(filepath.Join(m.opts.DataDir, "exports"))
 	alive := make(map[string]bool, len(m.tasks))
