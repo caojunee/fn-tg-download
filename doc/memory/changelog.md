@@ -1,12 +1,13 @@
 # 版本记录
 
-## v0.5.4-dev（2026-09-10，feature/resource-picker 分支，未发版）
+## v0.5.4（2026-09-10，feature/resource-picker 分支）
 
 - **「下载选中」= 立即下载**：资源选择器选中资源后点「下载选中」直接创建任务并开始下载，不用再回页面点「开始下载」。创建期间按钮 loading（"正在创建…"）、取消按钮禁用、弹窗不可关闭；成功后自动把该链接从输入框与解析结果中摘除（避免再点「开始下载」时重复建任务），待下载列表清空时跳转任务页；失败则保留弹窗与已勾选范围，可重试或用「开始下载」兜底（勾选范围仍会带上）。
 - 「开始下载」语义不变：创建输入框里剩下的链接（未手动选资源的链接 / 整频道 / 单条消息），带上前述兜底的勾选范围。
 - **修复：资源较多时卡片被压扁、文件信息显示不全且无滚动条**：资源网格 `grid-auto-rows` 为默认 `auto`，会被压缩到弹层可用高度内（实测 6 条 @ 矮窗口时行高被压到 43px、200 条时压到 2px），卡片内容（缩略图/文件名/大小）被 `overflow:hidden` 裁掉，且因为不产生溢出所以没有滚动条。改为 `grid-auto-rows: max-content`（行高固定为内容高度）+ `overscroll-behavior: contain`，并在网格上加 6px 细纵向滚动条（`::-webkit-scrollbar`；Firefox 用 `@supports not selector(::-webkit-scrollbar)` 兜底 `scrollbar-width: thin`，因为 Chrome 一旦设置 `scrollbar-width` 就会忽略 webkit 伪元素）。实测行高恢复 155px、200 条可滚 8476px 且末条可达。
 - 资源选择器改动仅前端（`NewDownloadView.vue`、`ResourcePicker.vue`），复用现有 `selected` 参数。
 - **修复：清空下载历史后解析链接仍显示"已下载"**：链接台账 `download_urls` 表此前独立于 `tasks` 表、只增不删（v0.5.0 设计为"清历史不删"），导致清空历史后重新解析同一链接仍带"已下载"徽标。现在台账生命周期跟随任务记录——`ClearHistory` 清空台账（保留活跃任务仍在用的 URL，顺带清掉修复前遗留的孤儿行），`Remove(ids)` 同步删除被删任务 URL 的台账行（仍被其他任务引用的不动）。`Persister` 接口新增 `DeleteURLs` / `DeleteURLsExcept`（MySQL 实现，JSON 兜底不支持则不启用台账）。
+- **修复：serve 中断导致任务被判失败（进度丢弃）**：上游断流/tdl serve 异常退出时 aria2 报 `Got EOF from the server`，此前是 3 次固定 2s 重试（约 10s）就整任务 failed（实测 1.1GB 任务停在 94.5%）。现在：① 下载循环用 `ServeProc.Alive()` 非阻塞探测 serve 退出，退出即重建 serve（端口会变，句柄同步），aria2 凭 `.aria2` 控制文件字节级续传；② 启动 serve 失败重试 3 次；③ aria2 重试 5 次、退避 2/4/8/16s。实测下载中 `kill -9` serve 进程 6s 后自动重启并续传至完成。
 
 ## v0.5.3（2026-09-06，feature/resource-picker 分支）
 
