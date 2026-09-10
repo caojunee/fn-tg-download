@@ -849,7 +849,7 @@ func (m *Manager) runServeTask(task *Task, r *runner, ctx context.Context, srcUR
 		}
 	}
 
-	proc, files, err := tdl.StartServe(ctx, tdl.ServeOptions{
+	serveOpts := tdl.ServeOptions{
 		TdlPath:   m.opts.TdlPath,
 		DataDir:   m.opts.TdlDataDir,
 		Namespace: m.opts.Namespace,
@@ -857,17 +857,57 @@ func (m *Manager) runServeTask(task *Task, r *runner, ctx context.Context, srcUR
 		URL:       srcURL,
 		File:      srcFile,
 		Group:     task.Group && srcFile == "", // 清单已展开相册，仅链接来源需要 --group
-	}, onLog)
+	}
+	// startServe 启动（或重启）tdl serve。上游断流、serve 异常退出时按需重建，
+	// 端口会变：r.serve 同步更新，后续 aria2 重新取 URL 即用新端口续传。
+	startServe := func() (*tdl.ServeProc, []tdl.ServeFile, error) {
+		p, fs, err := tdl.StartServe(ctx, serveOpts, onLog)
+		if err != nil {
+			return nil, nil, err
+		}
+		r.fm.Lock()
+		r.serve = p
+		r.fm.Unlock()
+		log.Printf("task %s serve ready: port=%d endpoints=%d save=%s",
+			task.ID, p.Port(), len(fs), task.SavePath)
+		return p, fs, nil
+	}
+	// 启动 serve：网络抖动、进程被杀等瞬时故障重试 3 次（永久性错误只是
+	// 多花几秒），避免一次抖动就把任务判死
+	var (
+		proc  *tdl.ServeProc
+		files []tdl.ServeFile
+		err   error
+	)
+	for attempt := 1; attempt <= 3; attempt++ {
+		proc, files, err = startServe()
+		if err == nil {
+			break
+		}
+		log.Printf("task %s serve 启动失败（第 %d 次）: %v", task.ID, attempt, err)
+		select {
+		case <-r.stop:
+			close(r.stopped)
+			return
+		case <-ctx.Done():
+			close(r.stopped)
+			return
+		case <-time.After(3 * time.Second):
+		}
+	}
 	if err != nil {
 		m.failTask(task, r, "启动下载服务失败: "+err.Error())
 		return
 	}
-	r.fm.Lock()
-	r.serve = proc
-	r.fm.Unlock()
-	defer proc.Stop()
-	log.Printf("task %s serve ready: port=%d endpoints=%d save=%s",
-		task.ID, proc.Port(), len(files), task.SavePath)
+	// 任务结束时停掉当前 serve（可能已重启多次，指向最后一个进程）
+	defer func() {
+		r.fm.Lock()
+		cur := r.serve
+		r.fm.Unlock()
+		if cur != nil {
+			cur.Stop()
+		}
+	}()
 
 	// 过滤元数据缺失的端点（HEAD 失败的极端情况）
 	plan0 := make([]tdl.ServeFile, 0, len(files))
@@ -990,7 +1030,7 @@ func (m *Manager) runServeTask(task *Task, r *runner, ctx context.Context, srcUR
 
 		var lastErr error
 		var aria *tdl.RunningDownload
-		for attempt := 1; attempt <= 3; attempt++ {
+		for attempt := 1; attempt <= 5; attempt++ {
 			aria, err = tdl.StartAria2(ctx, tdl.Aria2Options{
 				Aria2Path: ariaBin,
 				URL:       proc.URL(p.sf.Endpoint),
@@ -1051,12 +1091,27 @@ func (m *Manager) runServeTask(task *Task, r *runner, ctx context.Context, srcUR
 				break
 			}
 			log.Printf("task %s file %s aria2 attempt %d failed: %v", task.ID, p.name, attempt, lastErr)
+			// serve 可能已异常退出（进程崩溃/上游断流后自行结束）：不重建的话
+			// 后续重试只会继续 EOF，任务会带着 90%+ 的进度被判失败。
+			if alive, serr := proc.Alive(); !alive {
+				log.Printf("task %s serve 已退出(%v)，尝试重启后继续续传", task.ID, serr)
+				if np, _, rerr := startServe(); rerr == nil {
+					proc = np
+				} else {
+					log.Printf("task %s serve 重启失败: %v", task.ID, rerr)
+				}
+			}
+			// 退避重试：网络抖动/上游断流往往几秒内自愈，耐心比快速失败更值钱
+			backoff := time.Duration(2<<uint(attempt-1)) * time.Second // 2s/4s/8s/16s
+			if backoff > 20*time.Second {
+				backoff = 20 * time.Second
+			}
 			select {
 			case <-r.stop:
 				lastErr = errStopped
 			case <-ctx.Done():
 				lastErr = errStopped
-			case <-time.After(2 * time.Second):
+			case <-time.After(backoff):
 			}
 			if lastErr == errStopped {
 				break

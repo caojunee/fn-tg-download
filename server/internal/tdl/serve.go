@@ -71,6 +71,23 @@ func (s *ServeProc) Stop() {
 	_ = s.cmd.Process.Kill()
 }
 
+// Alive 非阻塞检测 serve 子进程是否仍在运行。已退出时返回 false 与退出错误
+// （进程正常结束则为 nil）。注意 Done 只投递一次，检测到退出后再调用返回 false。
+func (s *ServeProc) Alive() (bool, error) {
+	if s == nil {
+		return false, fmt.Errorf("serve 未启动")
+	}
+	select {
+	case err, ok := <-s.Done:
+		if !ok || err == nil {
+			return false, fmt.Errorf("serve 已退出")
+		}
+		return false, err
+	default:
+		return true, nil
+	}
+}
+
 // serveEndpointsRe 从 serve 索引页提取端点（href，如 "4434014100/2"）。
 var serveEndpointsRe = regexp.MustCompile(`<a href="([^"]+)"`)
 
