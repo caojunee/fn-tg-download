@@ -371,11 +371,41 @@ const FILTERS: { key: 'all' | 'video' | 'photo' | 'other'; label: string }[] = [
     display: grid;
     flex: 1;
     grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+    /* 行高固定为内容高度：默认 auto 行会被压缩到容器可用高度内，
+       卡片内容（缩略图 / 文件名 / 大小）会被裁掉且不产生滚动条 */
+    grid-auto-rows: max-content;
     gap: 12px;
     align-content: start;
     min-height: 0;
     padding: 4px 16px 16px;
     overflow-y: auto;
+    /* 内容超出时给一条细纵向滚动条（不与弹层滚动联动） */
+    overscroll-behavior: contain;
+
+    /* Firefox：不支持 ::-webkit-scrollbar，用标准属性兜底。
+       Chrome 一旦设置 scrollbar-width 就会忽略 ::-webkit-scrollbar，
+       所以这里用 @supports 只对不支持该伪元素的浏览器生效。 */
+    @supports not selector(::-webkit-scrollbar) {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(31, 35, 41, 0.24) transparent;
+    }
+
+    &::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    &::-webkit-scrollbar-thumb {
+      background: rgba(31, 35, 41, 0.24);
+      border-radius: 3px;
+
+      &:hover {
+        background: rgba(31, 35, 41, 0.42);
+      }
+    }
+
+    &::-webkit-scrollbar-track {
+      background: transparent;
+    }
   }
 
   &__foot {
