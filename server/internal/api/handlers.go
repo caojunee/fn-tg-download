@@ -113,32 +113,37 @@ func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, _ *http.Request) {
-	// 下载占锁期间（bolt 被 serve 独占）实测会阻塞到下载结束，
-	// 直接回缓存；无缓存的极端情况回落实测（有 20s 超时兜底）。
-	if s.tasks.ServeBusy() {
-		if info := s.me.load(); info != nil {
-			ok(w, info)
-			return
-		}
-	}
-
-	// 不占锁时照旧实测：会话被远端吊销、换号等靠这里纠偏并刷新缓存
-	ctx := rctx(20 * time.Second)
-	cfg := s.clientConfig()
-
-	has, err := tdl.HasSession(ctx, cfg.DataDir, cfg.Namespace)
-	if err == nil && !has {
-		s.me.clear()
-		fail(w, codeBizErr, "not logged in")
+	// 有缓存（内存 / data/me.json）立即返回——iOS 等移动端页面打开
+	// 首个请求就是它，实测（起 tdl 客户端+bolt 锁+网络自检）放后台纠偏。
+	// 无缓存的极端情况回落实测（20s 超时兜底）。
+	if info := s.me.load(); info != nil {
+		s.me.refreshAsync(s.tasks.ServeBusy, s.meLive)
+		ok(w, info)
 		return
 	}
-	info, err := tdl.Me(ctx, cfg)
+	info, err := s.meLive(rctx(20 * time.Second))
 	if err != nil {
 		fail(w, codeBizErr, "not logged in")
 		return
 	}
-	s.me.save(info)
 	ok(w, info)
+}
+
+// meLive 起一次真实客户端实测登录信息（占 bolt 锁+网络自检，慢）。
+// 成功写缓存；确认无会话则清缓存。
+func (s *Server) meLive(ctx context.Context) (*tdl.UserInfo, error) {
+	cfg := s.clientConfig()
+	has, err := tdl.HasSession(ctx, cfg.DataDir, cfg.Namespace)
+	if err == nil && !has {
+		s.me.clear()
+		return nil, errors.New("not logged in")
+	}
+	info, err := tdl.Me(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	s.me.save(info)
+	return info, nil
 }
 
 func normalizePhone(p string) string {
