@@ -11,6 +11,10 @@ fpk/tg-download/app/web/
 *.fpk
 web/.playwright-cli/
 
+# 本地工具目录（IDE / agent 工作区，不入库）
+.idea/
+.workbuddy/
+
 # 预置/本地 Telegram 登录态（含真实 session，禁止入库）
 fpk/*/app/presets/
 .tdl/
